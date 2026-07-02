@@ -1,0 +1,375 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://raw.githubusercontent.com/AshishKumar4/opencode-better-compact/main/better-compact.schema.json",
+    "title": "Better Compact Plugin Configuration",
+    "description": "Configuration schema for the OpenCode Better Compact plugin",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+        "$schema": {
+            "type": "string",
+            "description": "JSON Schema reference for IDE autocomplete"
+        },
+        "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable or disable the Better Compact plugin"
+        },
+        "autoUpdate": {
+            "type": "boolean",
+            "default": false,
+            "description": "Automatically update npm-installed Better Compact when a newer npm latest version is available. Version-locked plugin specs are not updated."
+        },
+        "debug": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable debug logging"
+        },
+        "pruneNotification": {
+            "type": "string",
+            "enum": ["off", "minimal", "detailed"],
+            "default": "detailed",
+            "description": "Level of notification shown when context management occurs"
+        },
+        "pruneNotificationType": {
+            "type": "string",
+            "enum": ["chat", "toast"],
+            "default": "chat",
+            "description": "Where to display notifications (chat message or toast notification)"
+        },
+        "commands": {
+            "type": "object",
+            "description": "Configuration for Better Compact slash commands (/better-compact)",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable Better Compact slash commands (/better-compact)"
+                },
+                "protectedTools": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Additional tool names or wildcard patterns to protect from pruning via commands. Supports glob wildcards: * matches any characters, ? matches a single character (e.g., \"mcp_*\", \"my_tool_?\")"
+                }
+            },
+            "default": {
+                "enabled": true,
+                "protectedTools": []
+            }
+        },
+        "compaction": {
+            "type": "object",
+            "description": "Better Compact compaction preset and custom tuning",
+            "additionalProperties": false,
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": ["light", "moderate", "max", "custom"],
+                    "default": "light",
+                    "description": "Compaction level. Custom uses the values under compaction.custom."
+                },
+                "custom": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "triggerPercent": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 99,
+                            "default": 85,
+                            "description": "Warn/confirm below this context usage percentage."
+                        },
+                        "targetPercent": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 99,
+                            "default": 35,
+                            "description": "Target projected context usage percentage after compaction."
+                        },
+                        "recentToolTokens": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 200000,
+                            "default": 40000,
+                            "description": "Calibrated recent tool-call/result budget to preserve raw."
+                        },
+                        "summarizerConcurrency": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 16,
+                            "default": 4,
+                            "description": "Maximum scratch summarizer sessions to run in parallel."
+                        }
+                    }
+                }
+            },
+            "default": {
+                "preset": "light",
+                "custom": {
+                    "triggerPercent": 85,
+                    "targetPercent": 35,
+                    "recentToolTokens": 40000,
+                    "summarizerConcurrency": 4
+                }
+            }
+        },
+        "manualMode": {
+            "type": "object",
+            "description": "Reserved for legacy internal utilities; Better Compact pruning is runtime-driven.",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Boundary pruning is runtime-driven and does not use normal-chat manual mode."
+                },
+                "automaticStrategies": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Keep automatic cleanup strategies running when enabled"
+                }
+            },
+            "default": {
+                "enabled": false,
+                "automaticStrategies": true
+            }
+        },
+        "turnProtection": {
+            "type": "object",
+            "description": "Protect recent tool outputs from being pruned",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable turn-based protection"
+                },
+                "turns": {
+                    "type": "number",
+                    "default": 4,
+                    "description": "Number of recent turns to protect from pruning"
+                }
+            }
+        },
+        "experimental": {
+            "type": "object",
+            "description": "Experimental settings that may change in future releases",
+            "additionalProperties": false,
+            "properties": {
+                "allowSubAgents": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Allow Better Compact processing in subagent sessions"
+                },
+                "customPrompts": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable user-editable prompt overrides under better-compact-prompts directories"
+                }
+            },
+            "default": {
+                "allowSubAgents": false,
+                "customPrompts": false
+            }
+        },
+        "protectedFilePatterns": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "default": [],
+            "description": "Glob patterns for files that should be protected from pruning (e.g., '**/*.config.ts')"
+        },
+        "compress": {
+            "type": "object",
+            "description": "Advanced internal context-management settings",
+            "additionalProperties": false,
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["range", "message"],
+                    "default": "range",
+                    "description": "Internal summary mode retained for compatibility with older utility tests."
+                },
+                "permission": {
+                    "type": "string",
+                    "enum": ["ask", "allow", "deny"],
+                    "default": "allow",
+                    "description": "Permission mode for Better Compact commands"
+                },
+                "showCompression": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show detailed summaries in notifications when available"
+                },
+                "summaryBuffer": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When enabled, active summary tokens are considered in context threshold calculations."
+                },
+                "maxContextLimit": {
+                    "description": "Context threshold setting. Accepts number or \"X%\" of the model context window.",
+                    "default": 100000,
+                    "oneOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "string",
+                            "pattern": "^\\d+(?:\\.\\d+)?%$"
+                        }
+                    ]
+                },
+                "minContextLimit": {
+                    "description": "Soft lower threshold retained for internal context heuristics. Accepts number or \"X%\" of the model context window.",
+                    "default": 50000,
+                    "oneOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "string",
+                            "pattern": "^\\d+(?:\\.\\d+)?%$"
+                        }
+                    ]
+                },
+                "modelMaxLimits": {
+                    "description": "Per-model override for maxContextLimit by exact provider/model key. If set, this takes priority over the global maxContextLimit.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string",
+                                "pattern": "^\\d+(?:\\.\\d+)?%$"
+                            }
+                        ]
+                    }
+                },
+                "modelMinLimits": {
+                    "description": "Per-model override for minContextLimit by exact provider/model key. If set, this takes priority over the global minContextLimit.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string",
+                                "pattern": "^\\d+(?:\\.\\d+)?%$"
+                            }
+                        ]
+                    }
+                },
+                "nudgeFrequency": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 1,
+                    "description": "Reserved for legacy internal utilities."
+                },
+                "iterationNudgeThreshold": {
+                    "type": "number",
+                    "default": 15,
+                    "minimum": 1,
+                    "description": "Reserved for legacy internal utilities."
+                },
+                "nudgeForce": {
+                    "type": "string",
+                    "enum": ["strong", "soft"],
+                    "default": "soft",
+                    "description": "Reserved for legacy internal utilities."
+                },
+                "protectedTools": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Tool names or wildcard patterns protected from internal pruning. Supports glob wildcards: * matches any characters, ? matches a single character (e.g., \"mcp_*\", \"my_tool_?\")"
+                },
+                "protectTags": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Preserve text wrapped in <protect>...</protect> when context is compacted"
+                },
+                "protectUserMessages": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When enabled, user messages are explicitly protected by internal utilities. Better Compact preserves user messages by default."
+                }
+            },
+            "default": {
+                "mode": "range",
+                "permission": "allow",
+                "showCompression": false,
+                "summaryBuffer": true,
+                "maxContextLimit": 100000,
+                "minContextLimit": 50000,
+                "nudgeFrequency": 5,
+                "iterationNudgeThreshold": 15,
+                "nudgeForce": "soft",
+                "protectedTools": [],
+                "protectTags": false,
+                "protectUserMessages": false
+            }
+        },
+        "strategies": {
+            "type": "object",
+            "description": "Automatic pruning strategies",
+            "additionalProperties": false,
+            "properties": {
+                "deduplication": {
+                    "type": "object",
+                    "description": "Remove duplicate tool outputs",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Enable deduplication strategy"
+                        },
+                        "protectedTools": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": [],
+                            "description": "Tool names or wildcard patterns excluded from deduplication. Supports glob wildcards: * matches any characters, ? matches a single character (e.g., \"mcp_*\", \"my_tool_?\")"
+                        }
+                    }
+                },
+                "purgeErrors": {
+                    "type": "object",
+                    "description": "Remove tool outputs that resulted in errors",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Enable purge errors strategy"
+                        },
+                        "turns": {
+                            "type": "number",
+                            "default": 4,
+                            "description": "Number of turns after which errors are purged"
+                        },
+                        "protectedTools": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": [],
+                            "description": "Tool names or wildcard patterns excluded from error purging. Supports glob wildcards: * matches any characters, ? matches a single character (e.g., \"mcp_*\", \"my_tool_?\")"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
