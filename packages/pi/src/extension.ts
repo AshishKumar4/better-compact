@@ -29,6 +29,10 @@ import { piCodec, piSpec } from "./codec"
 import { createPlanStore } from "./plan-store"
 import { createSummarizer } from "./summarizer"
 import { createTranscriptStore } from "./transcripts"
+import { formatTokens } from "./tui/format"
+import { ReportComponent } from "./tui/report"
+import { createSettingsComponent } from "./tui/settings"
+import { WidgetComponent, type WidgetState } from "./tui/widget"
 
 const CONFIG_FILE = "better-compact.json"
 const DEFAULT_CONFIG: CompactionConfig = {
@@ -56,6 +60,39 @@ export default function betterCompact(pi: ExtensionAPI) {
     let config = mergeCompactionConfig()
     let profile = COMPACTION_PRESETS.light
     let warnedNativeCompaction = false
+    let widget: WidgetState = { planActive: false }
+
+    // The widget is docked above the editor, so it only earns its line when
+    // there is something to say: an active plan or summaries still running.
+    const updateWidget = (ctx: ExtensionContext, next: Partial<WidgetState>): void => {
+        widget = { ...widget, ...next }
+        if (!ctx.hasUI) return
+        const worthShowing = widget.planActive || (widget.summarizing?.total ?? 0) > 0
+        ctx.ui.setWidget(
+            "better-compact",
+            worthShowing ? (_tui, theme) => new WidgetComponent(theme, widget) : undefined,
+            { placement: "aboveEditor" },
+        )
+    }
+
+    // Terminal overlays exist only in TUI mode; RPC and headless runs fall
+    // back to the notification they have always had.
+    const showReport = async (
+        ctx: ExtensionContext,
+        plan: BoundaryContextPlan,
+        pendingSummaries: number,
+    ): Promise<void> => {
+        const summary = `Better Compact: ${formatTokens(plan.beforeTokens)} -> ${formatTokens(plan.afterPruneTokens)} tokens; applies from the next request.`
+        if (!ctx.hasUI || ctx.mode !== "tui") {
+            ctx.ui.notify(summary, "info")
+            return
+        }
+        await ctx.ui.custom<null>(
+            (_tui, theme, _keybindings, done) =>
+                new ReportComponent(theme, { plan, pendingSummaries }, () => done(null)),
+            { overlay: true },
+        )
+    }
 
     const enginePorts = (ctx: ExtensionContext): EnginePorts => ({
         transcripts: createTranscriptStore(ctx.sessionManager.getSessionDir()),
@@ -115,6 +152,13 @@ export default function betterCompact(pi: ExtensionAPI) {
             if (result.outcome === "planned" && result.plan.summaryJobs.length > 0) {
                 void upgradePlanWithSummaries(ctx, turns, contextLimit, result.plan)
             }
+            const plan = result.outcome === "planned" ? result.plan : undefined
+            updateWidget(ctx, {
+                planActive: true,
+                contextLimit,
+                contextTokens: plan?.afterPruneTokens ?? ctx.getContextUsage()?.tokens ?? undefined,
+                prunedTokens: plan ? Math.max(0, plan.beforeTokens - plan.afterPruneTokens) : widget.prunedTokens,
+            })
             return { messages: piCodec.decode(result.turns, event.messages) }
         } catch (error) {
             // A failed prune must never break the request; it goes out unpruned.
@@ -168,6 +212,9 @@ export default function betterCompact(pi: ExtensionAPI) {
                             "better-compact",
                             `Better Compact: running ${plan.summaryJobs.length} summary jobs…`,
                         )
+                        updateWidget(ctx, {
+                            summarizing: { done: 0, total: plan.summaryJobs.length },
+                        })
                         const summaries = await summaryScheduler.summarize({
                             sessionKey,
                             jobs: plan.summaryJobs,
@@ -191,12 +238,56 @@ export default function betterCompact(pi: ExtensionAPI) {
                     }
                 }
                 await plans.save(sessionKey, toPlanSnapshot(finalPlan))
-                ctx.ui.notify(
-                    `Better Compact: ${formatTokens(finalPlan.beforeTokens)} -> ${formatTokens(finalPlan.afterPruneTokens)} tokens; applies from the next request.`,
-                    "info",
-                )
+                updateWidget(ctx, {
+                    planActive: true,
+                    contextLimit,
+                    contextTokens: finalPlan.afterPruneTokens,
+                    prunedTokens: Math.max(
+                        0,
+                        finalPlan.beforeTokens - finalPlan.afterPruneTokens,
+                    ),
+                    summarizing: undefined,
+                })
+                await showReport(ctx, finalPlan, 0)
             } finally {
                 ctx.ui.setStatus("better-compact", undefined)
+            }
+        },
+    })
+
+    pi.registerCommand("better-compact-settings", {
+        description: "Open Better Compact settings",
+        handler: async (_args, ctx) => {
+            if (!ctx.hasUI || ctx.mode !== "tui") {
+                ctx.ui.notify(
+                    "Better Compact settings need the interactive TUI; use /better-compact-preset here.",
+                    "warning",
+                )
+                return
+            }
+            const result = await ctx.ui.custom<{ changed: boolean; config: CompactionConfig }>(
+                (_tui, theme, _keybindings, done) => createSettingsComponent(theme, config, done),
+                { overlay: true },
+            )
+            if (!result?.changed) return
+            const path = join(getAgentDir(), CONFIG_FILE)
+            try {
+                const current = (await readConfigObject(path)) ?? {}
+                await writeConfigObject(path, {
+                    ...current,
+                    automatic: result.config.automatic,
+                    preset: result.config.preset,
+                    summaryEffort: result.config.summaryEffort,
+                })
+                config = mergeCompactionConfig(config, result.config)
+                profile = resolveCompactionProfile({ compaction: config })
+                ctx.ui.notify("Better Compact settings saved.", "info")
+            } catch (error) {
+                logger.warn("Better Compact settings update failed", {
+                    path,
+                    error: errorText(error),
+                })
+                ctx.ui.notify(`Better Compact: could not write ${path}.`, "warning")
             }
         },
     })
@@ -384,10 +475,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
     return error instanceof Error && "code" in error
-}
-
-function formatTokens(tokens: number): string {
-    return tokens >= 1_000 ? `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}K` : String(tokens)
 }
 
 function errorText(error: unknown): string {
