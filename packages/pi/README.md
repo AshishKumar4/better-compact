@@ -52,13 +52,24 @@ already pruning non-destructively:
 in `~/.pi/agent/settings.json`. The extension never changes your settings itself; if native
 compaction fires while it is installed, it warns once per session.
 
-## Command
+## Commands and UI
 
-`/better-compact` — force a prune of the current session right now (below the trigger too), with
-before/after token numbers. The plan applies from the next request.
+`/better-compact` — force a prune of the current session right now (below the trigger too). In the
+interactive TUI this opens a report overlay showing what the ladder actually did: before/after and
+target context meters, and every stage with the tokens it freed and how many messages it touched
+(stages that never had to run say so). The plan applies from the next request. Outside the TUI
+(RPC, headless) the same result arrives as a notification.
 
-`/better-compact-preset <light|moderate|max>` — select a preset and write it to
-`<pi-agent-dir>/better-compact.json`.
+`/better-compact-settings` — an interactive settings panel for automatic compaction, compaction
+strength, and summary effort, built on pi's own `SettingsList` so it matches every other pi
+settings surface. Changes are written to `<pi-agent-dir>/better-compact.json`.
+
+`/better-compact-preset <light|moderate|max>` — the non-interactive equivalent for RPC and headless
+runs, where overlays are unavailable.
+
+While a plan is active, a one-line widget sits above the editor with the current context meter,
+how much the plan is keeping out of each request, and live background-summary progress. It clears
+itself when there is nothing to report, so it never costs you a line for free.
 
 ## Configuration
 
