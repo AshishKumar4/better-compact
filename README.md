@@ -133,7 +133,7 @@ And for the TUI plugin, in `~/.config/opencode/tui.json`:
 
 Published packages: [`better-compact`](https://www.npmjs.com/package/better-compact) (OpenCode plugin), [`@better-compact/cli`](https://www.npmjs.com/package/@better-compact/cli) (Claude Code on-disk compaction), [`@better-compact/pi`](https://www.npmjs.com/package/@better-compact/pi) (the pi extension), and [`@better-compact/core`](https://www.npmjs.com/package/@better-compact/core) (the ladder, for embedding in other harnesses).
 
-CI verifies every push/PR with typecheck, tests (including the Bun-hosted TUI suite), build, package verification, and an OpenCode plugin-manager install smoke test. Three tag-driven release pipelines publish to npm with provenance: `v*` (OpenCode plugin — verifies the tag against the package version, packs a deterministic tarball, smoke-installs it through real OpenCode versions, and creates the GitHub Release), `cli-v*` (the CLI), `pi-v*` (the pi extension), and `core-v*` (the core). The release runbook lives in [RELEASING.md](RELEASING.md).
+CI verifies every push/PR with typecheck, tests (including the Bun-hosted TUI suite), build, package verification, and an OpenCode plugin-manager install smoke test. Four tag-driven release pipelines publish to npm with provenance: `v*` (OpenCode plugin — verifies the tag against the package version, packs a deterministic tarball, smoke-installs it through real OpenCode versions, and creates the GitHub Release), `cli-v*` (the CLI), `pi-v*` (the pi extension), and `core-v*` (the core). The release runbook lives in [RELEASING.md](RELEASING.md).
 
 ## Upstream
 
