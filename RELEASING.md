@@ -39,6 +39,32 @@ versions without a token, configure a trusted publisher once on npmjs.com:
 After that, a `core-v*` tag publishes core hands-off, the same way the plugin
 already releases.
 
+## `@better-compact/pi` (the pi extension)
+
+1. Bump `packages/pi/package.json` `version`, commit, push to `master`.
+2. Tag and push with the `pi-v` prefix:
+   ```bash
+   git tag pi-v0.2.0 && git push origin pi-v0.2.0
+   ```
+   `.github/workflows/release-pi.yml` verifies the tag matches the version,
+   runs typecheck + tests, builds and `pnpm pack`s the package, and `npm publish`es
+   that tarball with provenance.
+
+The very first publish must be manual from an authenticated npm session,
+because npm can only bind a trusted publisher to a package that already
+exists:
+
+```bash
+npm login                     # web login
+cd packages/pi && pnpm build
+npm publish "$(pnpm pack --pack-destination /tmp | tail -1)" --access public
+```
+
+Then configure the trusted publisher once (npmjs.com → the
+`@better-compact/pi` package → **Settings → Trusted Publishing** → GitHub
+Actions, repository `AshishKumar4/better-compact`, workflow `release-pi.yml`)
+and every later `pi-v*` tag publishes hands-off.
+
 ## `@better-compact/cli` (the Claude Code compaction CLI)
 
 1. Bump `packages/cli/package.json` `version`, commit, push to `master`.

@@ -81,8 +81,14 @@ Details and flags (`--aggressive`, `--from-backup`, `--keep-tokens`): [packages/
 
 ### pi
 
-Not yet on npm — build from source (`pnpm build` in `packages/pi`, then drop `dist/extension.js`
-into `~/.pi/agent/extensions`). Details: [packages/pi/README.md](packages/pi/README.md).
+```bash
+pi install npm:@better-compact/pi
+```
+
+Or build from source (`pnpm build` in `packages/pi`, then drop `dist/extension.js` into
+`~/.pi/agent/extensions`). `/better-compact` opens a report overlay of what the ladder did,
+`/better-compact-settings` an interactive settings panel, and a status widget sits above the editor
+while a plan is active. Details: [packages/pi/README.md](packages/pi/README.md).
 
 ## Development
 
@@ -92,7 +98,7 @@ This is a pnpm workspace:
 packages/
 ├── core/         @better-compact/core — the platform-neutral ladder, pure, zero runtime dependencies
 ├── opencode/     better-compact — the OpenCode plugin (hooks, codec, TUI, commands, state)
-├── pi/           @better-compact/pi — the pi extension (codec, plan store, summarizer)
+├── pi/           @better-compact/pi — the pi extension (codec, plan store, summarizer, TUI)
 ├── cli/          @better-compact/cli — the better-compact CLI (Claude Code on-disk session compaction)
 └── claude-code/  @better-compact/claude-code — the Claude Code plugin (/better-compact:compact command)
 ```
@@ -125,9 +131,9 @@ And for the TUI plugin, in `~/.config/opencode/tui.json`:
 
 ## Releases
 
-Published packages: [`better-compact`](https://www.npmjs.com/package/better-compact) (OpenCode plugin), [`@better-compact/cli`](https://www.npmjs.com/package/@better-compact/cli) (Claude Code on-disk compaction), and [`@better-compact/core`](https://www.npmjs.com/package/@better-compact/core) (the ladder, for embedding in other harnesses).
+Published packages: [`better-compact`](https://www.npmjs.com/package/better-compact) (OpenCode plugin), [`@better-compact/cli`](https://www.npmjs.com/package/@better-compact/cli) (Claude Code on-disk compaction), [`@better-compact/pi`](https://www.npmjs.com/package/@better-compact/pi) (the pi extension), and [`@better-compact/core`](https://www.npmjs.com/package/@better-compact/core) (the ladder, for embedding in other harnesses).
 
-CI verifies every push/PR with typecheck, tests (including the Bun-hosted TUI suite), build, package verification, and an OpenCode plugin-manager install smoke test. Three tag-driven release pipelines publish to npm with provenance: `v*` (OpenCode plugin — verifies the tag against the package version, packs a deterministic tarball, smoke-installs it through real OpenCode versions, and creates the GitHub Release), `cli-v*` (the CLI), and `core-v*` (the core). The release runbook lives in [RELEASING.md](RELEASING.md).
+CI verifies every push/PR with typecheck, tests (including the Bun-hosted TUI suite), build, package verification, and an OpenCode plugin-manager install smoke test. Three tag-driven release pipelines publish to npm with provenance: `v*` (OpenCode plugin — verifies the tag against the package version, packs a deterministic tarball, smoke-installs it through real OpenCode versions, and creates the GitHub Release), `cli-v*` (the CLI), `pi-v*` (the pi extension), and `core-v*` (the core). The release runbook lives in [RELEASING.md](RELEASING.md).
 
 ## Upstream
 
