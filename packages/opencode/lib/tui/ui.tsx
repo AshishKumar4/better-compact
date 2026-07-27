@@ -6,20 +6,31 @@ import { pct } from "./format"
 import type { Theme, ThemeColor, TuiApi } from "./types"
 import { PLUGIN_VERSION } from "../version"
 
+// OpenCode's dialog host pins every dialog at paddingTop = terminalHeight / 4
+// and does no vertical centering, so the usable space is the remaining three
+// quarters — not the half we used to budget for. Cap the frame at what the
+// host actually leaves (the inner scroll region absorbs anything longer) so
+// dialogs neither run off the bottom of the screen nor scroll content the
+// terminal had room to show.
+export function dialogMaxHeight(terminalHeight: number): number {
+    const available = terminalHeight - Math.floor(terminalHeight / 4)
+    return Math.max(8, available - 2)
+}
+
 export function BetterCompactFrame(props: {
     api: TuiApi
     title?: string
     eyebrow: string
     children: JSX.Element
     onBack?: () => void
-    height?: number
+    maxHeight?: number
     footer?: JSX.Element
 }) {
     const theme = props.api.theme.current
     return (
         <box
-            height={props.height}
-            overflow={props.height ? "hidden" : undefined}
+            maxHeight={props.maxHeight}
+            overflow={props.maxHeight ? "hidden" : undefined}
             flexDirection="column"
             paddingLeft={3}
             paddingRight={3}

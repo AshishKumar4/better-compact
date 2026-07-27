@@ -2,11 +2,7 @@ import { resolveCompactionProfile, type CompactionConfig } from "@better-compact
 import type { RuntimeState, SessionState, WithParts } from "./state"
 import type { Logger } from "./logger"
 import type { PluginConfig } from "./config"
-import {
-    stripHallucinations,
-    stripHallucinationsFromString,
-    stripStaleMetadata,
-} from "./messages"
+import { stripHallucinations, stripHallucinationsFromString } from "./messages"
 import { filterMessages, filterMessagesInPlace } from "./messages/shape"
 import { handleContextCommand, handleHelpCommand, handleStatsCommand } from "./commands"
 import { type HostPermissionSnapshot } from "./host-permissions"
@@ -133,7 +129,6 @@ export function createChatMessageTransformHandler(
             // sending raw history.
             applyBoundaryPlanSnapshot(messages, state.boundary.activePlan, { allowRegrown: true })
         }
-        stripStaleMetadata(messages)
 
         if (state.sessionId) {
             await logger.saveContext(state.sessionId, messages)
