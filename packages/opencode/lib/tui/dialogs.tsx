@@ -13,7 +13,7 @@ import { formatTokenCount } from "../ui/utils"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { formatDuration } from "./format"
-import { BetterCompactFrame, Card, DialogButton, Metric, Progress } from "./ui"
+import { BetterCompactFrame, Card, DialogButton, dialogMaxHeight, Metric, Progress } from "./ui"
 import type { StatsReport, Theme, TuiApi } from "./types"
 
 export function StatusDialog(props: {
@@ -196,7 +196,7 @@ export function ProgressDialog(props: {
         const end = props.job.completedAt ?? props.now
         return formatDuration(Math.max(0, end - props.job.startedAt))
     }
-    const frameHeight = () => Math.max(12, Math.floor(dimensions().height / 2) - 1)
+    const frameHeight = () => dialogMaxHeight(dimensions().height)
 
     return (
         <BetterCompactFrame
@@ -204,7 +204,7 @@ export function ProgressDialog(props: {
             title="Progress"
             eyebrow="Better Compact"
             onBack={props.onBack}
-            height={frameHeight()}
+            maxHeight={frameHeight()}
         >
             <scrollbox
                 flexGrow={1}
@@ -376,7 +376,7 @@ export function PanelDialog(props: {
             api={props.api}
             title="Global settings"
             eyebrow="Better Compact"
-            height={Math.max(12, Math.floor(dimensions().height / 2) - 1)}
+            maxHeight={dialogMaxHeight(dimensions().height)}
             footer={
                 <box flexShrink={0} flexDirection="row" justifyContent="space-between" paddingTop={1}>
                     <DialogButton

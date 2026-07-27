@@ -6,6 +6,7 @@ import type { JSX } from "solid-js"
 import { BOUNDARY_PROGRESS_STAGES } from "../lib/boundary/progress"
 import { PanelDialog, ProgressDialog } from "../lib/tui/dialogs"
 import { openProgressModal } from "../lib/tui/modals"
+import { dialogMaxHeight } from "../lib/tui/ui"
 import type { BoundaryJobProgress } from "../lib/state"
 
 const theme = {
@@ -68,7 +69,7 @@ async function renderHosted(node: () => JSX.Element, width: number, height: numb
     return setup
 }
 
-test("settings dialog is vertically centered, bounded, and keeps its footer visible", async () => {
+test("settings dialog fits on screen under the host offset and keeps its footer visible", async () => {
     for (const [width, height] of [
         [80, 24],
         [120, 30],
@@ -96,10 +97,13 @@ test("settings dialog is vertically centered, bounded, and keeps its footer visi
             const header = lines.findIndex((line) => line.includes("Better Compact"))
             const footer = lines.findIndex((line) => line.includes("save"))
 
-            expect(header).toBeGreaterThanOrEqual(0)
+            // The host pins dialogs at paddingTop = height / 4 and never
+            // centers them, so a dialog tall enough to show its content cannot
+            // also be centered. What must hold is that the whole dialog —
+            // footer included — lands on screen below that offset.
+            expect(header).toBeGreaterThanOrEqual(Math.floor(height / 4))
             expect(footer).toBeGreaterThan(header)
             expect(footer).toBeLessThan(height)
-            expect(Math.abs((header + footer) / 2 - (height - 1) / 2)).toBeLessThanOrEqual(1)
         } finally {
             setup.renderer.destroy()
         }
@@ -407,5 +411,26 @@ test("progress controller adopts a recent same-session job with a foreign id", a
     } finally {
         setup.renderer.destroy()
         currentClose?.()
+    }
+})
+
+// OpenCode's dialog host pins content at paddingTop = height / 4 with no
+// vertical centering. The budget must fit inside what is left, and must not
+// waste the space the terminal actually has — the old height/2 budget scrolled
+// content that would have fit on screen.
+test("the dialog height budget fits under the host's quarter-height offset", () => {
+    for (const height of [14, 16, 20, 24, 30, 40, 51, 60, 120]) {
+        const hostOffset = Math.floor(height / 4)
+        const budget = dialogMaxHeight(height)
+
+        expect(hostOffset + budget).toBeLessThanOrEqual(height)
+        expect(budget).toBeGreaterThan(0)
+        // The budget must actually claim the space the host leaves, not a
+        // fraction of it: the old half-screen budget scrolled content that the
+        // terminal had room to display.
+        const available = height - hostOffset
+        if (height >= 24) {
+            expect(budget).toBeGreaterThanOrEqual(available - 2)
+        }
     }
 })

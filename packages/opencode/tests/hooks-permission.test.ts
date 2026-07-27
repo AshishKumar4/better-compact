@@ -962,3 +962,61 @@ test("a waiting transform is not rejected when the active compaction fails", asy
     assert.equal(JSON.stringify(messages), before)
     await waitFor(() => runtime.activeCompaction(sessionId) === undefined)
 })
+
+// Anthropic rejects a request whose latest assistant message carries thinking
+// blocks that differ from what it issued, and the signature lives in the
+// reasoning part's metadata. OpenCode already applies its own differentModel
+// policy after this hook (it converts reasoning to plain text rather than
+// emitting an unsigned thinking block), so the plugin must leave reasoning
+// metadata alone — stripping it here produced a signature-less thinking block
+// and a 400.
+test("the transform preserves reasoning signatures even when the model differs", async () => {
+    const logger = new Logger(false)
+    const config = buildConfig("deny")
+    const client = { session: { get: async () => ({}) }, provider: { list: async () => [] } }
+    const runtime = createRuntimeState(client as any, logger)
+    const handler = createChatMessageTransformHandler(
+        client as any,
+        runtime,
+        logger,
+        config,
+        { global: undefined, agents: {} },
+    )
+    const signature = "ErUBCkYIBRgCKkA0signature"
+    const assistant: WithParts = {
+        info: {
+            id: "assistant-reasoning",
+            role: "assistant",
+            sessionID: "session-1",
+            agent: "assistant",
+            providerID: "anthropic",
+            modelID: "claude-opus-4-8",
+            time: { created: 2 },
+        } as WithParts["info"],
+        parts: [
+            {
+                id: "assistant-reasoning-part",
+                messageID: "assistant-reasoning",
+                sessionID: "session-1",
+                type: "reasoning",
+                text: "thinking through it",
+                metadata: { anthropic: { signature } },
+            } as WithParts["parts"][number],
+        ],
+    }
+    // The newest user message names a different model, which is exactly what
+    // happens after switching models mid-session.
+    const output = {
+        messages: [assistant, buildUserMessage("user-2", "carry on", 3)],
+    }
+
+    await handler({}, output)
+
+    const reasoning = output.messages[0]?.parts[0] as { type: string; metadata?: unknown }
+    assert.equal(reasoning.type, "reasoning", "the part must stay a reasoning part")
+    assert.deepEqual(
+        reasoning.metadata,
+        { anthropic: { signature } },
+        "the thinking signature must survive the transform verbatim",
+    )
+})
