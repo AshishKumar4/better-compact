@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { register } from "node:module"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import process from "node:process"
@@ -14,6 +15,29 @@ const packageSpec = args[1]
 if (!executableArg) {
     throw new Error("pass the OpenCode executable path as the first argument or OPENCODE_BIN")
 }
+
+// OpenCode resolves the optional peers to its own embedded copies, so an installed
+// plugin never ships them. Resolve them from this repo to match, otherwise this
+// check would silently depend on the plugin installing packages it never loads.
+const hostProvided = Object.entries(
+    JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).peerDependenciesMeta ?? {},
+)
+    .filter(([, meta]) => meta?.optional)
+    .map(([name]) => name)
+
+register(
+    "data:text/javascript," +
+        encodeURIComponent(`
+            const provided = ${JSON.stringify(hostProvided)}
+            const parentURL = ${JSON.stringify(pathToFileURL(path.join(root, "package.json")).href)}
+            export function resolve(specifier, context, next) {
+                const host = provided.some(
+                    (name) => specifier === name || specifier.startsWith(name + "/"),
+                )
+                return next(specifier, host ? { ...context, parentURL } : context)
+            }
+        `),
+)
 
 const sandbox = await mkdtemp(path.join(tmpdir(), "better-compact-install-"))
 

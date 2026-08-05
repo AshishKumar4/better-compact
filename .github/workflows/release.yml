@@ -34,9 +34,11 @@ jobs:
             - run: pnpm --filter better-compact run test:tui
             - run: pnpm run build
             - run: pnpm run verify:package
+            # pnpm pack rewrites the workspace: protocol to a real version; npm pack
+            # would publish "@better-compact/core": "workspace:*" verbatim.
             - run: |
-                  archive="$(cd packages/opencode && npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP")"
-                  mv "$RUNNER_TEMP/$archive" "$RUNNER_TEMP/package.tgz"
+                  archive="$(cd packages/opencode && pnpm pack --pack-destination "$RUNNER_TEMP" | tail -1)"
+                  mv "$archive" "$RUNNER_TEMP/package.tgz"
             - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
               with:
                   name: npm-package
