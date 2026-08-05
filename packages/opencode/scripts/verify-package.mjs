@@ -114,6 +114,54 @@ function assertPackageJsonShape() {
     }
 }
 
+function getPublishedBareImports() {
+    const specifiers = new Set()
+    for (const entry of ["dist/index.js", "dist/tui.js"]) {
+        const source = readFileSync(path.join(root, entry), "utf8")
+        for (const [, specifier] of source.matchAll(/\bfrom\s*["']([^"']+)["']/g)) {
+            if (specifier.startsWith(".") || specifier.startsWith("/")) continue
+            const name = getPackageName(specifier)
+            if (!builtinNames.has(name)) specifiers.add(name)
+        }
+    }
+    return specifiers
+}
+
+// OpenCode resolves @opentui/* to its own embedded copies through a Bun resolver
+// plugin, so a plugin never loads them from its own node_modules. An upper bound
+// there protects nothing and only makes `opencode plugin better-compact`
+// unresolvable the moment OpenTUI ships a minor, which is what 0.5.0 did.
+function assertInstallableDependencies() {
+    const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
+    const peers = pkg.peerDependencies ?? {}
+    const meta = pkg.peerDependenciesMeta ?? {}
+
+    if (Object.keys(pkg.dependencies ?? {}).length > 0) {
+        fail(
+            "package.json must not declare dependencies; tsup bundles them through noExternal, so anything listed here is installed but never loaded",
+        )
+    }
+
+    const imported = getPublishedBareImports()
+    if (imported.size === 0) {
+        fail("found no bare imports in the built bundles; the import scan is no longer working")
+    }
+    for (const specifier of imported) {
+        if (!(specifier in peers)) {
+            fail(`dist imports ${specifier}, so package.json must declare it as a peer dependency`)
+        }
+    }
+
+    for (const [name, range] of Object.entries(peers)) {
+        if (!meta[name]?.optional) continue
+        if (!/^>=\d+\.\d+\.\d+$/.test(range)) {
+            fail(
+                `peer dependency ${name} is host-provided, so its range must be a bare lower bound like '>=0.4.2', found '${range}'`,
+            )
+        }
+    }
+}
+
 async function validateBuiltEntrypoints() {
     const server = await import(pathToFileURL(path.join(root, "dist/index.js")).href)
     if (typeof server.default !== "function") {
@@ -290,6 +338,7 @@ function validatePackedFiles() {
 
 assertRepoFilesExist()
 assertPackageJsonShape()
+assertInstallableDependencies()
 validateRuntimeImportGraph()
 await validateBuiltEntrypoints()
 validatePackedFiles()
