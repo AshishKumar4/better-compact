@@ -2,7 +2,15 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { stubTranscript, summarizeTranscript } from "../src/claude/compact"
 import { stripSessionArgs } from "../src/claude/command"
-import { restoreFromBackups, resumeModelArgs, type TranscriptEntry } from "../src/claude/transcript"
+import {
+    damagedLine,
+    parseTranscript,
+    parseTranscriptLines,
+    restoreFromBackups,
+    resumeModelArgs,
+    serializeTranscript,
+    type TranscriptEntry,
+} from "../src/claude/transcript"
 
 let counter = 0
 function uuid(): string {
@@ -334,4 +342,44 @@ test("compaction only touches the conversation after the last boundary", () => {
         outcome.totalMessages,
         cont.filter((e) => e.type === "user" || e.type === "assistant").length,
     )
+})
+const NUL = String.fromCharCode(0)
+
+// A real 61MB session (24605 lines) was left permanently uncompactable by a
+// single torn write: line 23846 began with a run of NUL bytes followed by the
+// surviving tail of a record. Claude Code's own writer produced it, so the
+// compactor has to cope rather than refuse the entire session.
+test("a torn line is carried through verbatim instead of failing the parse", () => {
+    const good1 = JSON.stringify({ type: "user", uuid: "u1", message: { role: "user", content: "hi" } })
+    const good2 = JSON.stringify({ type: "user", uuid: "u2", message: { role: "user", content: "yo" } })
+    const torn = NUL.repeat(64) + 'anded.</summary>"}'
+    const text = good1 + "\n" + torn + "\n" + good2 + "\n"
+
+    const { entries, damagedLines } = parseTranscriptLines(text)
+
+    assert.equal(entries.length, 3, "the damaged line keeps its slot")
+    assert.deepEqual(damagedLines, [2])
+    assert.equal(entries[0]?.uuid, "u1")
+    assert.equal(entries[2]?.uuid, "u2")
+    assert.equal(damagedLine(entries[1]!), torn)
+    assert.equal(damagedLine(entries[0]!), undefined)
+
+    // The damaged bytes must survive a round trip untouched: we never repair,
+    // reformat or drop what we could not read.
+    assert.equal(serializeTranscript(entries), text)
+
+    // Compaction clones entries before rewriting them, and structuredClone
+    // drops symbol-keyed properties — which silently turned the damaged line
+    // into `{}` and destroyed the bytes that had survived the torn write.
+    const cloned = entries.map((entry) => structuredClone(entry))
+    assert.equal(damagedLine(cloned[1]!), torn, "the raw line must survive cloning")
+    assert.equal(serializeTranscript(cloned), text)
+})
+
+test("parseTranscript still returns a plain entry list for callers that do not care", () => {
+    const torn = "  not json"
+    const entries = parseTranscript('{"type":"user","uuid":"u1"}' + "\n" + torn + "\n")
+    assert.equal(entries.length, 2)
+    assert.equal(entries[0]?.uuid, "u1")
+    assert.equal(damagedLine(entries[1]!), torn)
 })
