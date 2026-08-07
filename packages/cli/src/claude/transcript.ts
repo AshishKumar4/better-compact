@@ -3,6 +3,19 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSyn
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+// A line Claude Code's own writer left unparsable — in practice a torn write
+// from an unclean shutdown, where the file was extended but the data blocks
+// never flushed, so the region reads back as NUL bytes with the tail of a real
+// record behind it. Aborting would strand such a session as permanently
+// uncompactable, so the damaged line rides through verbatim instead: it is
+// never parsed, never rewritten, and lands byte-for-byte back in the file.
+// A plain string key, not a symbol: entries pass through structuredClone on
+// the way to compaction, and that silently drops symbol-keyed properties —
+// which would turn a damaged line into `{}` and destroy the bytes that
+// survived. serializeTranscript substitutes the raw text, so this key never
+// reaches the file.
+const RAW_LINE = "__betterCompactRawLine"
+
 // A single line of a Claude Code session transcript. Only the fields the
 // compactor reads are named; everything else rides along via the index
 // signature and is re-emitted verbatim.
@@ -19,6 +32,8 @@ export interface TranscriptEntry {
     gitBranch?: string
     timestamp?: string
     isCompactSummary?: boolean
+    /** Present only on lines that could not be parsed; re-emitted verbatim. */
+    __betterCompactRawLine?: string
     [key: string]: unknown
 }
 
@@ -30,18 +45,45 @@ export function sessionsDir(home = homedir()): string {
     return join(home, ".claude", "sessions")
 }
 
-export function parseTranscript(text: string): TranscriptEntry[] {
+export function damagedLine(entry: TranscriptEntry): string | undefined {
+    const raw = entry[RAW_LINE]
+    return typeof raw === "string" ? raw : undefined
+}
+
+export interface ParsedTranscript {
+    entries: TranscriptEntry[]
+    /** 1-based line numbers carried through verbatim because they do not parse. */
+    damagedLines: number[]
+}
+
+export function parseTranscriptLines(text: string): ParsedTranscript {
     const entries: TranscriptEntry[] = []
-    for (const line of text.split("\n")) {
+    const damagedLines: number[] = []
+    const lines = text.split("\n")
+    for (let index = 0; index < lines.length; index++) {
+        const line = lines[index]
         const trimmed = line.trim()
         if (!trimmed) continue
-        entries.push(JSON.parse(trimmed) as TranscriptEntry)
+        try {
+            entries.push(JSON.parse(trimmed) as TranscriptEntry)
+        } catch {
+            damagedLines.push(index + 1)
+            entries.push({ [RAW_LINE]: line } as TranscriptEntry)
+        }
     }
-    return entries
+    return { entries, damagedLines }
+}
+
+export function parseTranscript(text: string): TranscriptEntry[] {
+    return parseTranscriptLines(text).entries
 }
 
 export function serializeTranscript(entries: TranscriptEntry[]): string {
-    return entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
+    return (
+        entries
+            .map((entry) => damagedLine(entry) ?? JSON.stringify(entry))
+            .join("\n") + "\n"
+    )
 }
 
 export interface ResolvedSession {

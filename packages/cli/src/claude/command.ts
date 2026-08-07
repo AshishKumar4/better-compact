@@ -8,6 +8,7 @@ import {
     latestSessionForCwd,
     liveSessionPid,
     parseTranscript,
+    parseTranscriptLines,
     resolveSession,
     restoreFromBackups,
     resumeModelArgs,
@@ -68,11 +69,21 @@ function compactSession(file: string, sessionId: string, args: ClaudeArgs): Comp
     }
 
     let original: TranscriptEntry[]
+    let damagedLines: number[]
     try {
-        original = parseTranscript(readFileSync(file, "utf-8"))
+        ;({ entries: original, damagedLines } = parseTranscriptLines(readFileSync(file, "utf-8")))
     } catch (error) {
-        console.error(`Could not parse ${file}: ${(error as Error).message}`)
+        console.error(`Could not read ${file}: ${(error as Error).message}`)
         return { status: "failed", resumeModel: [] }
+    }
+    if (damagedLines.length > 0) {
+        const shown = damagedLines.slice(0, 5).join(", ")
+        const more = damagedLines.length > 5 ? ` (+${damagedLines.length - 5} more)` : ""
+        console.warn(
+            `${file} has ${damagedLines.length} unreadable line(s) at ${shown}${more} — ` +
+                "almost certainly a torn write from an unclean shutdown. " +
+                "They are carried through untouched.",
+        )
     }
     const resumeModel = resumeModelArgs(original)
 
