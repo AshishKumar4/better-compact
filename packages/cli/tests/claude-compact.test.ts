@@ -383,3 +383,61 @@ test("parseTranscript still returns a plain entry list for callers that do not c
     assert.equal(entries[0]?.uuid, "u1")
     assert.equal(damagedLine(entries[1]!), torn)
 })
+
+// Claude Code injects context through `attachment` entries that carry no
+// `message`, so every stage used to skip them. In a real session they were
+// 37% of the context: 456 `task_reminder` entries each restating the whole
+// task list, plus file snippets.
+function attachment(type: string, payload: Record<string, unknown>): TranscriptEntry {
+    return { ...COMMON, type: "attachment", uuid: uuid(), parentUuid: null, attachment: { type, ...payload } }
+}
+
+function taskList(chars: number): unknown[] {
+    return [{ id: "1", subject: "big task", description: "x".repeat(chars) }]
+}
+
+test("superseded task reminders are emptied but the newest one survives", () => {
+    const entries: TranscriptEntry[] = []
+    for (let i = 0; i < 4; i++) entries.push(attachment("task_reminder", { content: taskList(2000), itemCount: 1 }))
+    entries.push(...conversation(12))
+
+    const outcome = stubTranscript(entries, { keepTailTokens: 2000 })
+    assert.ok(outcome)
+    assert.ok(outcome.stubbedAttachments >= 3, "older reminders pruned")
+
+    const reminders = outcome.entries.filter((e) => (e.attachment as { type?: string })?.type === "task_reminder")
+    const payloads = reminders.map((e) => (e.attachment as { content: unknown[] }).content)
+    // Only the newest restatement carries information.
+    assert.deepEqual(payloads.slice(0, -1).map((c) => c.length), [0, 0, 0])
+    assert.equal(payloads.at(-1)!.length, 1, "the newest reminder keeps its list")
+    assert.equal((reminders[0].attachment as { itemCount: number }).itemCount, 0, "count follows the payload")
+})
+
+test("attachment pruning spares raw user intent and stubs file snippets", () => {
+    const queued = attachment("queued_command", { prompt: "please do the thing ".repeat(60) })
+    const edited = attachment("edited_text_file", { filename: "/a.ts", snippet: "y".repeat(3000) })
+    const entries = [queued, edited, ...conversation(12)]
+
+    const outcome = stubTranscript(entries, { keepTailTokens: 2000 })
+    assert.ok(outcome)
+
+    const q = outcome.entries.find((e) => (e.attachment as { type?: string })?.type === "queued_command")!
+    assert.match((q.attachment as { prompt: string }).prompt, /please do the thing/, "user intent is never pruned")
+    const f = outcome.entries.find((e) => (e.attachment as { type?: string })?.type === "edited_text_file")!
+    assert.match((f.attachment as { snippet: string }).snippet, /^\[better-compact: pruned 3000 chars\]$/)
+    assert.equal((f.attachment as { filename: string }).filename, "/a.ts", "identity kept")
+})
+
+test("attachment pruning is idempotent and counted in the reported totals", () => {
+    const entries = [attachment("task_reminder", { content: taskList(4000), itemCount: 1 }),
+                     attachment("edited_text_file", { filename: "/b.ts", snippet: "z".repeat(4000) }),
+                     ...conversation(12)]
+
+    const first = stubTranscript(entries, { keepTailTokens: 2000 })!
+    assert.ok(first.preTokens > first.postTokens, "attachments are inside the before/after numbers")
+    const firstPruned = first.stubbedAttachments
+    assert.ok(firstPruned > 0)
+
+    const second = stubTranscript(first.entries, { keepTailTokens: 2000 })
+    assert.equal(second?.stubbedAttachments ?? 0, 0, "a second pass finds nothing left to prune")
+})

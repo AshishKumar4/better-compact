@@ -27,8 +27,51 @@ export interface StubOutcome {
     postTokens: number
     stubbedTools: number
     strippedReasoning: number
+    stubbedAttachments: number
     keptTailMessages: number
     totalMessages: number
+}
+
+// Claude Code injects context through `attachment` entries, which carry no
+// `message` at all — the payload hangs off `entry.attachment`. They were
+// invisible to both the pruner and the estimator, and in long sessions they
+// dominate: one real transcript spent 282k of 782k tokens here, 187k of it
+// `task_reminder` entries that each restate the whole task list. Only the
+// newest restatement carries information; the rest are superseded copies.
+const SUPERSEDED_ATTACHMENTS = new Set(["task_reminder", "skill_listing", "agent_listing_delta"])
+
+// Payload fields worth pruning per attachment type, plus any count field that
+// describes them. `queued_command` is deliberately absent: its `prompt` is raw
+// user intent, which the ladder never discards.
+const ATTACHMENT_PAYLOADS: Record<string, { fields: string[]; counts?: string[] }> = {
+    task_reminder: { fields: ["content"], counts: ["itemCount"] },
+    skill_listing: { fields: ["content"], counts: ["skillCount"] },
+    agent_listing_delta: { fields: ["addedLines"] },
+    edited_text_file: { fields: ["snippet"] },
+    file: { fields: ["content"] },
+}
+
+// Payloads arrive as strings (file snippets, skill listings) or as arrays of
+// records (task reminders carry the whole task list). Strings collapse to a
+// marker; arrays empty out, which is what "superseded" means for them and
+// keeps the shape Claude Code's renderer expects.
+function prunedPayload(value: unknown): { next: unknown; chars: number } | null {
+    if (typeof value === "string") {
+        if (value.length < STUB_MIN_CHARS) return null
+        return { next: `[better-compact: pruned ${value.length} chars]`, chars: value.length }
+    }
+    if (Array.isArray(value)) {
+        const chars = JSON.stringify(value).length
+        if (chars < STUB_MIN_CHARS) return null
+        return { next: [], chars }
+    }
+    return null
+}
+
+interface AttachmentEntry {
+    type?: string
+    content?: unknown
+    [key: string]: unknown
 }
 
 // Prune the heavy parts (old tool inputs/outputs, old reasoning) in place
@@ -53,7 +96,8 @@ export function stubTranscript(
         budget += estimateEntryTokens(entries[conv[position]])
     }
 
-    const preTokens = totalTokens(conv, entries)
+    const oldestKeptIndex = keepIntact.size > 0 ? Math.min(...keepIntact) : entries.length
+    const preTokens = totalTokens(conv, entries) + attachmentTokens(entries)
     let stubbedTools = 0
     let strippedReasoning = 0
     for (const index of conv) {
@@ -62,30 +106,99 @@ export function stubTranscript(
         stubbedTools += result.stubbedTools
         strippedReasoning += result.strippedReasoning
     }
+    const stubbedAttachments = stubAttachments(entries, oldestKeptIndex)
     // A transcript pruned by an earlier run still needs its stale usage
     // anchor cleared, even when there is nothing new to stub.
     const previouslyPruned = entries.some(hasStubMarker)
     const usageReset =
-        stubbedTools > 0 || strippedReasoning > 0 || previouslyPruned
+        stubbedTools > 0 || strippedReasoning > 0 || stubbedAttachments > 0 || previouslyPruned
             ? resetStaleUsage(entries)
             : false
-    if (stubbedTools === 0 && strippedReasoning === 0 && !usageReset) return null
+    if (stubbedTools === 0 && strippedReasoning === 0 && stubbedAttachments === 0 && !usageReset) {
+        return null
+    }
 
     return {
         entries,
         preTokens,
-        postTokens: totalTokens(conv, entries),
+        postTokens: totalTokens(conv, entries) + attachmentTokens(entries),
         stubbedTools,
         strippedReasoning,
+        stubbedAttachments,
         keptTailMessages: keepIntact.size,
         totalMessages: conv.length,
     }
+}
+
+// Attachments older than the intact tail lose their bulky payload. Types that
+// restate the same evolving list keep only their newest copy, since the older
+// ones are strictly superseded.
+function stubAttachments(entries: TranscriptEntry[], oldestKeptIndex: number): number {
+    const newestOfType = new Map<string, number>()
+    for (let index = 0; index < entries.length; index++) {
+        const type = attachmentOf(entries[index])?.type
+        if (typeof type === "string" && SUPERSEDED_ATTACHMENTS.has(type)) {
+            newestOfType.set(type, index)
+        }
+    }
+
+    let stubbed = 0
+    for (let index = 0; index < entries.length && index < oldestKeptIndex; index++) {
+        const attachment = attachmentOf(entries[index])
+        const type = attachment?.type
+        if (!attachment || typeof type !== "string") continue
+        if (newestOfType.get(type) === index) continue
+        const spec = ATTACHMENT_PAYLOADS[type]
+        if (!spec) continue
+        let changed = false
+        for (const field of spec.fields) {
+            const pruned = prunedPayload(attachment[field])
+            if (!pruned) continue
+            attachment[field] = pruned.next
+            changed = true
+        }
+        if (changed) {
+            for (const count of spec.counts ?? []) {
+                if (typeof attachment[count] === "number") attachment[count] = 0
+            }
+            stubbed++
+        }
+    }
+    return stubbed
+}
+
+function attachmentOf(entry: TranscriptEntry): AttachmentEntry | null {
+    if (entry.type !== "attachment") return null
+    const attachment = entry.attachment
+    return attachment && typeof attachment === "object"
+        ? (attachment as AttachmentEntry)
+        : null
+}
+
+// Attachments are part of what Claude Code sends, so they belong in the
+// before/after numbers; leaving them out was reporting reductions the context
+// meter never saw.
+function attachmentTokens(entries: TranscriptEntry[]): number {
+    let chars = 0
+    for (const entry of entries) {
+        const attachment = attachmentOf(entry)
+        if (attachment) chars += JSON.stringify(attachment).length
+    }
+    return Math.round(chars / 4)
 }
 
 // Our stub shapes exactly, not any text that happens to mention the marker
 // (e.g. a session working on this repo): a tool_result whose content IS a
 // stub string, or a tool_use whose input carries our `pruned` field.
 function hasStubMarker(entry: TranscriptEntry): boolean {
+    const attachment = attachmentOf(entry)
+    if (attachment) {
+        for (const field of ATTACHMENT_PAYLOADS[String(attachment.type)]?.fields ?? []) {
+            const value = attachment[field]
+            if (typeof value === "string" && value.startsWith("[better-compact: pruned")) return true
+        }
+        return false
+    }
     const content = entry.message?.content
     if (!Array.isArray(content)) return false
     for (const block of content as WireBlock[]) {
