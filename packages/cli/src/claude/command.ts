@@ -127,7 +127,11 @@ function compactSession(file: string, sessionId: string, args: ClaudeArgs): Comp
     if (!commit(file, sessionId, outcome.entries, original.length, "stub")) {
         return { status: "failed", resumeModel }
     }
-    if (outcome.stubbedTools === 0 && outcome.strippedReasoning === 0) {
+    if (
+        outcome.stubbedTools === 0 &&
+        outcome.strippedReasoning === 0 &&
+        outcome.stubbedAttachments === 0
+    ) {
         console.log(
             `Reset ${sessionId}'s stale context anchor (already pruned; Claude Code will now recount the actual content).`,
         )
@@ -135,7 +139,8 @@ function compactSession(file: string, sessionId: string, args: ClaudeArgs): Comp
         console.log(
             `Compacted ${sessionId}: ~${outcome.preTokens.toLocaleString()} -> ` +
                 `~${outcome.postTokens.toLocaleString()} est tokens (${outcome.stubbedTools} tool inputs/outputs ` +
-                `stubbed, ${outcome.strippedReasoning} reasoning blocks removed; all ${outcome.totalMessages} messages kept)`,
+                `stubbed, ${outcome.strippedReasoning} reasoning blocks removed, ` +
+                `${outcome.stubbedAttachments} attachments pruned; all ${outcome.totalMessages} messages kept)`,
         )
     }
     return { status: "compacted", resumeModel }
