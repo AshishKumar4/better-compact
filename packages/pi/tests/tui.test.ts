@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { BoundaryContextPlan } from "@better-compact/core"
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { ReportComponent } from "../src/tui/report"
+import { ReportComponent, reportFromPlan } from "../src/tui/report"
 import { renderWidgetLine, type WidgetState } from "../src/tui/widget"
 import { formatTokens, meter, percent } from "../src/tui/format"
 
@@ -73,7 +73,7 @@ function plan(overrides: Partial<BoundaryContextPlan> = {}): BoundaryContextPlan
 }
 
 test("the report shows real per-stage numbers from the plan", () => {
-    const frame = new ReportComponent(theme, { plan: plan() }, () => {}).render(90).join("\n")
+    const frame = new ReportComponent(theme, reportFromPlan(plan()), () => {}).render(90).join("\n")
 
     assert.match(frame, /Pruned old tool calls\/results/)
     assert.match(frame, /400K freed · 42 msg/)
@@ -90,13 +90,9 @@ test("the report shows real per-stage numbers from the plan", () => {
 
 test("the report reports pending background summaries and dismisses on esc", () => {
     let closed = false
-    const component = new ReportComponent(
-        theme,
-        { plan: plan(), pendingSummaries: 3 },
-        () => {
-            closed = true
-        },
-    )
+    const component = new ReportComponent(theme, reportFromPlan(plan(), 3), () => {
+        closed = true
+    })
     assert.match(component.render(90).join("\n"), /Summarizing 3 assistant runs in the background/)
 
     component.handleInput("x")
@@ -106,7 +102,9 @@ test("the report reports pending background summaries and dismisses on esc", () 
 })
 
 test("a plan whose ladder never ran says so instead of rendering an empty list", () => {
-    const frame = new ReportComponent(theme, { plan: plan({ stages: [] }) }, () => {}).render(90)
+    const frame = new ReportComponent(theme, reportFromPlan(plan({ stages: [] })), () => {}).render(
+        90,
+    )
     assert.match(frame.join("\n"), /No stages ran/)
 })
 

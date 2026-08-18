@@ -48,10 +48,7 @@ test("round-trip preserves string and block user content verbatim", () => {
 test("an oversized multi-block user turn keeps only its newest block raw", () => {
     const newest = { type: "text" as const, text: "newest user detail stays raw" }
     const messages: PiMessage[] = [
-        userMessage([
-            { type: "text", text: "old user detail ".repeat(4_000) },
-            newest,
-        ]),
+        userMessage([{ type: "text", text: "old user detail ".repeat(4_000) }, newest]),
     ]
     const turns = piCodec.encode(messages)
     const plan = buildPlan(
@@ -293,4 +290,114 @@ test("transcript lines render every item kind", () => {
     assert.match(transcript, /\[orphaned tool result:bash\] callId=call_missing/)
     assert.match(transcript, /\[hologram\]/)
     assert.match(transcript, /\[image image\/jpeg\]/)
+})
+
+// A role the estimator does not price falls through to zero and hides real
+// context from the trigger, so every role Oh My Pi converts must cost tokens.
+// `AssertHostRolesModelled` catches an unmodelled role at compile time; these
+// catch a modelled role that is priced or rendered as nothing.
+test("Oh My Pi's own message roles are priced, not silently free", () => {
+    const cases: Array<{ label: string; message: PiMessage; expect: RegExp }> = [
+        {
+            label: "pythonExecution",
+            message: {
+                role: "pythonExecution",
+                code: "print(1)",
+                output: "p".repeat(4_000),
+                exitCode: 0,
+                timestamp: 1,
+            } as PiMessage,
+            expect: /\[python\]/,
+        },
+        {
+            label: "hookMessage",
+            message: {
+                role: "hookMessage",
+                customType: "policy",
+                content: [{ type: "text", text: "h".repeat(4_000) }],
+                display: false,
+                timestamp: 2,
+            } as PiMessage,
+            expect: /\[hook:policy\]/,
+        },
+        {
+            label: "fileMention",
+            message: {
+                role: "fileMention",
+                files: [{ path: "src/a.ts", content: "f".repeat(4_000) }],
+                timestamp: 3,
+            } as PiMessage,
+            expect: /\[file mention: src\/a\.ts\]/,
+        },
+        {
+            label: "developer",
+            message: {
+                role: "developer",
+                content: [{ type: "text", text: "d".repeat(4_000) }],
+                timestamp: 4,
+            } as PiMessage,
+            expect: /d{100}/,
+        },
+    ]
+
+    for (const { label, message, expect } of cases) {
+        const messages: PiMessage[] = [userMessage("go"), message]
+        const turns = piCodec.encode(messages)
+        const baseline = piCodec.estimateTurns(piCodec.encode([userMessage("go")]))
+        assert.ok(
+            piCodec.estimateTurns(turns) > baseline + 500,
+            `${label} must contribute tokens to the estimate`,
+        )
+
+        const item = turns.at(-1)?.items.at(-1)
+        assert.ok(item)
+        assert.match(piCodec.transcriptLine(item), expect, `${label} must render in the transcript`)
+        assert.deepEqual(piCodec.decode(turns, messages), messages, `${label} must round-trip`)
+    }
+})
+
+test("an excluded bash or python execution costs nothing, as the host sends nothing", () => {
+    const excluded: PiMessage[] = [
+        {
+            role: "pythonExecution",
+            code: "print(1)",
+            output: "p".repeat(4_000),
+            excludeFromContext: true,
+            timestamp: 1,
+        } as PiMessage,
+        {
+            role: "bashExecution",
+            command: "ls",
+            output: "b".repeat(4_000),
+            excludeFromContext: true,
+            timestamp: 2,
+        } as PiMessage,
+    ]
+    for (const message of excluded) {
+        assert.equal(piCodec.estimateTurns(piCodec.encode([message])), 0)
+    }
+})
+
+test("a mentioned image is priced on top of the file body", () => {
+    const withImage: PiMessage = {
+        role: "fileMention",
+        files: [
+            {
+                path: "a.png",
+                content: "",
+                image: { type: "image", data: "x", mimeType: "image/png" },
+            },
+        ],
+        timestamp: 1,
+    } as PiMessage
+    const withoutImage: PiMessage = {
+        role: "fileMention",
+        files: [{ path: "a.png", content: "" }],
+        timestamp: 1,
+    } as PiMessage
+
+    assert.ok(
+        piCodec.estimateTurns(piCodec.encode([withImage])) >
+            piCodec.estimateTurns(piCodec.encode([withoutImage])),
+    )
 })

@@ -2,7 +2,7 @@
 
 I got tired of watching coding agents hit their context limit and replace hours of careful work with a single lossy summary. Better Compact is my answer: a staged, pruning-first context ladder that preserves raw user intent, prunes old tool-heavy context first, writes transcript references for exact recall, and summarizes old assistant turns only when lighter pruning is not enough.
 
-The ladder is the product. Each platform declares its own ordered stage array — the same stages in the same order, minus the ones that platform has no concept of (skill and todo preservation exist only where the platform has skills/todos: OpenCode and Claude Code have both; pi has neither):
+The ladder is the product. Each platform declares its own ordered stage array — the same stages in the same order, minus the ones that platform has no concept of (skill and todo preservation exist only where the platform has skills/todos in-band: OpenCode and Claude Code have both; Oh My Pi has todos; pi has neither):
 
 1. Prune loaded skill context. _(skill-aware platforms only)_
 2. Supersede repeated reads of the same target and purge stale failed-tool inputs.
@@ -20,11 +20,12 @@ Every step writes raw transcripts to disk and injects a reference message, so th
 
 The ladder lives in a platform-neutral core (`packages/core`) that operates on a canonical message IR; each platform gets a thin codec/adapter around it:
 
-| Platform                        | Status                                               | How it integrates                    |
-| ------------------------------- | ---------------------------------------------------- | ------------------------------------ |
-| [OpenCode](https://opencode.ai) | Shipping (`packages/opencode`)                       | In-process message transform plugin  |
-| pi                              | Shipping (`packages/pi`)                             | In-process `context` event extension |
-| Claude Code                     | Shipping (`packages/cli` + `packages/claude-code`) | On-disk session compaction (`better-compact claude`) |
+| Platform                        | Status                                             | How it integrates                                                 |
+| ------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------- |
+| [OpenCode](https://opencode.ai) | Shipping (`packages/opencode`)                     | In-process message transform plugin                               |
+| pi                              | Shipping (`packages/pi`)                           | In-process `context` event extension                              |
+| [Oh My Pi](https://omp.sh)      | Shipping (`packages/pi`)                           | In-process `context` event extension **and** the compaction owner |
+| Claude Code                     | Shipping (`packages/cli` + `packages/claude-code`) | On-disk session compaction (`better-compact claude`)              |
 
 Claude Code enforces its context ceiling client-side and seeds its meter from token counts
 recorded inside the session transcript, so nothing on the wire can manage it; Better Compact
@@ -90,6 +91,19 @@ Or build from source (`pnpm build` in `packages/pi`, then drop `dist/extension.j
 `/better-compact-settings` an interactive settings panel, and a status widget sits above the editor
 while a plan is active. Details: [packages/pi/README.md](packages/pi/README.md).
 
+### Oh My Pi
+
+```bash
+omp plugin install @better-compact/pi
+```
+
+The same package carries an Oh My Pi entry, and this is the one adapter where Better Compact _owns_
+automatic compaction rather than coexisting with it. Every run the host decides on — manual, the
+pre-prompt and mid-turn thresholds, idle maintenance, and overflow recovery — is answered by the
+ladder: pruning alone when that reaches the target, and the ladder's own summary plus raw tail when
+pruning is exhausted. The native summarizer never runs, while Oh My Pi keeps ownership of when to
+compact, retry, rollback and accounting. Details: [packages/pi/README.md](packages/pi/README.md).
+
 ## Development
 
 This is a pnpm workspace:
@@ -98,7 +112,7 @@ This is a pnpm workspace:
 packages/
 ├── core/         @better-compact/core — the platform-neutral ladder, pure, zero runtime dependencies
 ├── opencode/     better-compact — the OpenCode plugin (hooks, codec, TUI, commands, state)
-├── pi/           @better-compact/pi — the pi extension (codec, plan store, summarizer, TUI)
+├── pi/           @better-compact/pi — the pi and Oh My Pi extensions (codec, plan store, summarizer, TUI)
 ├── cli/          @better-compact/cli — the better-compact CLI (Claude Code on-disk session compaction)
 └── claude-code/  @better-compact/claude-code — the Claude Code plugin (/better-compact:compact command)
 ```
@@ -131,9 +145,9 @@ And for the TUI plugin, in `~/.config/opencode/tui.json`:
 
 ## Releases
 
-Published packages: [`better-compact`](https://www.npmjs.com/package/better-compact) (OpenCode plugin), [`@better-compact/cli`](https://www.npmjs.com/package/@better-compact/cli) (Claude Code on-disk compaction), [`@better-compact/pi`](https://www.npmjs.com/package/@better-compact/pi) (the pi extension), and [`@better-compact/core`](https://www.npmjs.com/package/@better-compact/core) (the ladder, for embedding in other harnesses).
+Published packages: [`better-compact`](https://www.npmjs.com/package/better-compact) (OpenCode plugin), [`@better-compact/cli`](https://www.npmjs.com/package/@better-compact/cli) (Claude Code on-disk compaction), [`@better-compact/pi`](https://www.npmjs.com/package/@better-compact/pi) (the pi and Oh My Pi extensions), and [`@better-compact/core`](https://www.npmjs.com/package/@better-compact/core) (the ladder, for embedding in other harnesses).
 
-CI verifies every push/PR with typecheck, tests (including the Bun-hosted TUI suite), build, package verification, and an OpenCode plugin-manager install smoke test. Four tag-driven release pipelines publish to npm with provenance: `v*` (OpenCode plugin — verifies the tag against the package version, packs a deterministic tarball, smoke-installs it through real OpenCode versions, and creates the GitHub Release), `cli-v*` (the CLI), `pi-v*` (the pi extension), and `core-v*` (the core). The release runbook lives in [RELEASING.md](RELEASING.md).
+CI verifies every push/PR with typecheck, tests (including the Bun-hosted TUI suite), build, package verification, and an OpenCode plugin-manager install smoke test. Four tag-driven release pipelines publish to npm with provenance: `v*` (OpenCode plugin — verifies the tag against the package version, packs a deterministic tarball, smoke-installs it through real OpenCode versions, and creates the GitHub Release), `cli-v*` (the CLI), `pi-v*` (the pi and Oh My Pi extensions), and `core-v*` (the core). The release runbook lives in [RELEASING.md](RELEASING.md).
 
 ## Upstream
 

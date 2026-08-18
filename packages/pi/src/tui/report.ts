@@ -1,6 +1,10 @@
-import type { BoundaryContextPlan, BoundaryStageReport } from "@better-compact/core"
-import type { Component } from "@earendil-works/pi-tui"
-import type { Theme } from "@earendil-works/pi-coding-agent"
+import type {
+    BoundaryContextPlan,
+    BoundaryStageName,
+    BoundaryStageReport,
+    PlanSnapshot,
+} from "@better-compact/core"
+import type { HostComponent, HostTheme } from "./host"
 import { PLUGIN_VERSION } from "../version"
 import { formatTokens, meter, padEnd, percent } from "./format"
 
@@ -22,25 +26,74 @@ const STAGE_COLOR: Record<BoundaryStageReport["status"], "success" | "muted" | "
         failed: "error",
     }
 
+/**
+ * The plan facts the report renders. Named separately from
+ * `BoundaryContextPlan` because a persisted snapshot carries all of them while
+ * a live plan carries more — see {@link reportFromPlan} and
+ * {@link reportFromSnapshot}.
+ */
 export interface ReportInput {
-    plan: BoundaryContextPlan
+    contextLimit: number
+    beforeTokens: number
+    afterPruneTokens: number
+    targetTokens: number
+    stages: readonly BoundaryStageReport[]
+    transcriptRelativePath: string
     /** Summary jobs still running in the background, if any. */
     pendingSummaries?: number
 }
 
-// pi's ladder runs synchronously, so there is no progress to animate — what is
+export function reportFromPlan(plan: BoundaryContextPlan, pendingSummaries = 0): ReportInput {
+    return {
+        contextLimit: plan.contextLimit,
+        beforeTokens: plan.beforeTokens,
+        afterPruneTokens: plan.afterPruneTokens,
+        targetTokens: plan.targetTokens,
+        stages: plan.stages,
+        transcriptRelativePath: plan.transcript.relativePath,
+        pendingSummaries,
+    }
+}
+
+/**
+ * Snapshots persist stage records with widened `name`/`status` strings so an
+ * older snapshot keeps loading. Rows whose status this build does not recognize
+ * are dropped rather than rendered with a missing glyph.
+ */
+export function reportFromSnapshot(snapshot: PlanSnapshot): ReportInput {
+    return {
+        contextLimit: snapshot.contextLimit,
+        beforeTokens: snapshot.beforeTokens,
+        afterPruneTokens: snapshot.afterPruneTokens,
+        targetTokens: snapshot.targetTokens,
+        stages: (snapshot.stages ?? []).flatMap((stage) =>
+            stage.status in STAGE_GLYPH
+                ? [
+                      {
+                          ...stage,
+                          name: stage.name as BoundaryStageName,
+                          status: stage.status as BoundaryStageReport["status"],
+                      },
+                  ]
+                : [],
+        ),
+        transcriptRelativePath: snapshot.transcriptRelativePath,
+    }
+}
+
+// The ladder runs synchronously, so there is no progress to animate — what is
 // worth showing is what the ladder actually did. Every number here comes from
-// the plan the engine returned.
-export class ReportComponent implements Component {
+// the plan the engine returned or the snapshot it persisted.
+export class ReportComponent implements HostComponent {
     constructor(
-        private readonly theme: Theme,
+        private readonly theme: HostTheme,
         private readonly input: ReportInput,
         private readonly done: () => void,
     ) {}
 
     render(width: number): string[] {
         const { theme } = this
-        const { plan } = this.input
+        const plan = this.input
         const lines: string[] = []
         const rule = "─".repeat(Math.max(0, Math.min(width, 78)))
 
@@ -53,10 +106,10 @@ export class ReportComponent implements Component {
 
         lines.push(theme.fg("toolTitle", "Context window"))
         lines.push(this.meterLine("Before", plan.beforeTokens, plan.contextLimit, "warning"))
-        lines.push(this.meterLine("After prune", plan.afterPruneTokens, plan.contextLimit, "success"))
         lines.push(
-            this.meterLine("Target", plan.targetTokens, plan.contextLimit, "accent"),
+            this.meterLine("After prune", plan.afterPruneTokens, plan.contextLimit, "success"),
         )
+        lines.push(this.meterLine("Target", plan.targetTokens, plan.contextLimit, "accent"))
         const cleared = Math.max(0, plan.beforeTokens - plan.afterPruneTokens)
         lines.push(
             `  ${padEnd("Reclaimed", 14)}${theme.bold(theme.fg("success", formatTokens(cleared)))} ${theme.fg("dim", `(${percent(cleared, plan.beforeTokens)}% of prior context)`)}`,
@@ -81,9 +134,7 @@ export class ReportComponent implements Component {
                 ),
             )
         }
-        lines.push(
-            theme.fg("dim", `Raw history archived at ${plan.transcript.relativePath}`),
-        )
+        lines.push(theme.fg("dim", `Raw history archived at ${plan.transcriptRelativePath}`))
         lines.push(theme.fg("borderMuted", rule))
         lines.push(theme.fg("dim", "esc  close"))
         return lines
