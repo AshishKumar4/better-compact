@@ -3,9 +3,25 @@
 // slice declared here, so keeping it local is what lets one implementation
 // serve both hosts without importing either scope.
 
+/**
+ * The palette keys these components use. Both hosts throw on an unknown key, so
+ * naming them keeps a host renaming one a typecheck failure in the entrypoint
+ * rather than an error thrown mid-render inside an overlay.
+ */
+export type HostThemeColor =
+    | "accent"
+    | "borderMuted"
+    | "dim"
+    | "error"
+    | "muted"
+    | "success"
+    | "text"
+    | "toolTitle"
+    | "warning"
+
 /** The `fg`/`bold` slice of a host theme the components actually use. */
 export interface HostTheme {
-    fg(color: string, text: string): string
+    fg(color: HostThemeColor, text: string): string
     bold(text: string): string
 }
 

@@ -17,6 +17,7 @@ import {
 import type {
     AssistantMessage,
     ImageContent,
+    OutputMeta,
     PiFamilyMessage,
     TextContent,
     ThinkingContent,
@@ -384,7 +385,7 @@ function charsOfAssistantItem(item: Item): number {
     if (item.kind === "reasoning") return (item.handle as ThinkingContent).thinking.length
     if (item.kind === "tool") return charsOfToolPair(pairOf(item))
     if (item.kind === "synthetic") return item.text.length
-    return isWholeMessage(item.handle) ? 0 : jsonLength(item.handle)
+    return isWholeMessage(item.handle) ? 0 : charsOfBlock(item.handle)
 }
 
 function charsOfUserItems(items: Item[]): number {
@@ -393,18 +394,35 @@ function charsOfUserItems(items: Item[]): number {
         if (item.kind === "synthetic") chars += item.text.length
         else if (item.kind === "text") chars += textOf(item.handle).length
         else if (item.kind === "opaque" && !isWholeMessage(item.handle)) {
-            chars +=
-                (item.handle as ImageContent).type === "image"
-                    ? ESTIMATED_IMAGE_CHARS
-                    : jsonLength(item.handle)
+            chars += charsOfBlock(item.handle)
         }
     }
     return chars
 }
 
+/**
+ * Price one content block. An image is charged as the provider's visual-token
+ * cost, never as its base64 payload: an inline megabyte of image data is a
+ * four-figure token charge, so JSON-length pricing would overstate it by two
+ * orders of magnitude and force compaction on a session nowhere near its limit.
+ * Assistant content carries images too, not just user content.
+ */
+function charsOfBlock(handle: unknown): number {
+    return (handle as { type?: string }).type === "image"
+        ? ESTIMATED_IMAGE_CHARS
+        : jsonLength(handle)
+}
+
 function charsOfToolPair(pair: ToolPair): number {
     let chars = pair.call.name.length + jsonLength(pair.call.arguments)
-    if (pair.result) chars += charsOfUserContent(pair.result.content)
+    // A pruned result reaches the model as its text blocks alone
+    // (`getPrunedToolResultContent`), so its images are no longer context.
+    if (pair.result) {
+        chars +=
+            pair.result.prunedAt === undefined
+                ? charsOfUserContent(pair.result.content)
+                : charsOfUserContent(pair.result.content.filter((block) => block.type === "text"))
+    }
     return chars
 }
 
@@ -415,13 +433,20 @@ function charsOfContextMessage(message: PiMessage): number {
         case "toolResult":
             return charsOfUserContent(message.content)
         case "bashExecution":
-            return message.excludeFromContext ? 0 : bashExecutionText(message).length
+            return message.excludeFromContext
+                ? 0
+                : bashExecutionText(message).length + outputNoticeChars(message.meta)
         case "pythonExecution":
-            return message.excludeFromContext ? 0 : pythonExecutionText(message).length
+            return message.excludeFromContext
+                ? 0
+                : pythonExecutionText(message).length + outputNoticeChars(message.meta)
         case "developer":
         case "custom":
         case "hookMessage":
-            return charsOfUserContent(message.content)
+            // The hosts drop these when content is neither string nor array
+            // (`isCustomMessageContent`), and persisted or extension-supplied
+            // content really can be an arbitrary object.
+            return isConvertibleContent(message.content) ? charsOfUserContent(message.content) : 0
         case "fileMention":
             return fileMentionChars(message)
         case "branchSummary":
@@ -429,11 +454,15 @@ function charsOfContextMessage(message: PiMessage): number {
                 BRANCH_SUMMARY_PREFIX.length + message.summary.length + BRANCH_SUMMARY_SUFFIX.length
             )
         case "compactionSummary":
-            return (
-                COMPACTION_SUMMARY_PREFIX.length +
-                message.summary.length +
-                COMPACTION_SUMMARY_SUFFIX.length
-            )
+            // With `blocks` the host sends the bare summary plus those blocks;
+            // otherwise the wrapped summary plus `images`. Either payload is
+            // real replayed context.
+            return message.blocks !== undefined
+                ? message.summary.length + charsOfUserContent(message.blocks)
+                : COMPACTION_SUMMARY_PREFIX.length +
+                      message.summary.length +
+                      COMPACTION_SUMMARY_SUFFIX.length +
+                      charsOfUserContent(message.images ?? [])
         default:
             // Every role the hosts convert is handled above; the shared model's
             // role guard is what keeps that true.
@@ -441,12 +470,19 @@ function charsOfContextMessage(message: PiMessage): number {
     }
 }
 
+/**
+ * Mirrors the hosts' `isCustomMessageContent`: content that is neither a string
+ * nor an array is dropped rather than converted. Without this the estimator
+ * throws on such a message, the entrypoint catches it, and the request silently
+ * goes out unpruned — a worse failure than pricing it at zero.
+ */
+function isConvertibleContent(content: UserContent): boolean {
+    return typeof content === "string" || Array.isArray(content)
+}
+
 function charsOfUserContent(content: UserContent): number {
     if (typeof content === "string") return content.length
-    return content.reduce(
-        (sum, block) => sum + (block.type === "text" ? block.text.length : ESTIMATED_IMAGE_CHARS),
-        0,
-    )
+    return content.reduce((sum, block) => sum + charsOfBlock(block), 0)
 }
 
 /**
@@ -464,8 +500,8 @@ function fileMentionChars(message: Extract<PiMessage, { role: "fileMention" }>):
     return chars
 }
 
-// Mirrors pi's bashExecutionToText (pi core/messages.ts) so bash history
-// prices as the user-role text pi actually sends.
+// Mirrors bashExecutionToText (both hosts' session/messages.ts) so bash history
+// prices as the user-role text the host actually sends.
 function bashExecutionText(bash: Extract<PiMessage, { role: "bashExecution" }>): string {
     let text = `Ran \`${bash.command}\`\n`
     text += bash.output ? `\`\`\`\n${bash.output}\n\`\`\`` : "(no output)"
@@ -484,11 +520,26 @@ function bashExecutionText(bash: Extract<PiMessage, { role: "bashExecution" }>):
 function pythonExecutionText(python: Extract<PiMessage, { role: "pythonExecution" }>): string {
     let text = `Ran Python:\n\`\`\`python\n${python.code}\n\`\`\`\n`
     text += python.output ? `Output:\n\`\`\`\n${python.output}\n\`\`\`` : "(no output)"
-    if (python.cancelled) text += "\n\n(cancelled)"
+    if (python.cancelled) text += "\n\n(execution cancelled)"
     else if (python.exitCode !== null && python.exitCode !== undefined && python.exitCode !== 0) {
-        text += `\n\nExited with code ${python.exitCode}`
+        text += `\n\nExecution failed with code ${python.exitCode}`
     }
     return text
+}
+
+/**
+ * Length of Oh My Pi's `formatOutputNotice`, which the host appends to both
+ * execution serializations but which is not part of the readable text this
+ * codec renders into transcripts.
+ *
+ * The notice is a few short bracketed clauses plus an unbounded `LSP
+ * Diagnostics` block, and only the diagnostics text is large enough to move an
+ * estimate. Pricing the metadata by its serialized length captures that term and
+ * errs high on the rest, which is the safe direction: overestimating compacts
+ * slightly early, underestimating lets the trigger fire far too late.
+ */
+function outputNoticeChars(meta: OutputMeta | undefined): number {
+    return meta === undefined ? 0 : jsonLength(meta)
 }
 
 // --- transcript rendering ---

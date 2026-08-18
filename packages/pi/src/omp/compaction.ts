@@ -1,4 +1,9 @@
-import type { BoundaryContextPlan, Turn } from "@better-compact/core"
+import {
+    transformTurns,
+    type BoundaryContextPlan,
+    type LadderSpec,
+    type Turn,
+} from "@better-compact/core"
 
 /**
  * Messages are compared by reference only, so their type is deliberately
@@ -31,14 +36,21 @@ export type CompactionTrigger = "threshold" | "overflow" | "idle" | "incomplete"
 /**
  * What Better Compact does with one compaction request.
  *
- * - `prune`: the ladder reached its target without summarizing anything, so the
- *   run is declined and the persisted plan keeps shrinking each request.
- * - `compact`: pruning was exhausted; the plan's summary and boundary become a
- *   durable host compaction.
+ * - `compact`: the plan's summary and boundary become a durable host compaction.
  * - `decline`: Better Compact has no answer, so the native summarizer runs.
+ *
+ * There is deliberately no "prune instead" answer. `{cancel: true}` looks like
+ * one, but Oh My Pi anchors its threshold decision on the *stored* branch —
+ * `checkCompaction` and `maintainContextMidRun` both floor the provider number
+ * with `#estimateStoredContextTokens()` — which request-level pruning cannot
+ * move. So a declined threshold run is re-entered on every following turn and at
+ * every mid-turn tool boundary, each time re-planning the whole branch and
+ * rendering "Auto context-full maintenance cancelled" in the status line.
+ * Durably pruning without summarizing needs a host seam that can persist
+ * non-contiguous history; until then, one committed compaction per host request
+ * is the honest answer.
  */
 export type CompactionDecision =
-    | { kind: "prune" }
     | { kind: "compact"; firstKeptEntryId: string }
     | { kind: "decline"; reason: string }
 
@@ -52,33 +64,22 @@ export interface CompactionDecisionInput {
 }
 
 /**
- * Whether a trigger may be answered by pruning alone.
- *
- * `overflow` and `incomplete` are recovery runs: Oh My Pi already has a failed
- * or oversized turn in hand and its retry/rollback path depends on this
- * compaction producing real durable headroom. Declining one wedges the session.
- * `threshold` and `idle` are speculative — request-level pruning can satisfy
- * them without spending a summary, which is the point of pruning first. Manual
- * `/compact` is an explicit instruction to compact, so it is not speculative
- * either.
- */
-export function isSpeculativeTrigger(trigger: CompactionTrigger): boolean {
-    return trigger === "threshold" || trigger === "idle"
-}
-
-/**
- * The prune-before-summarize decision, kept free of host calls and IO so it can
- * be exercised directly.
- *
- * A recovery run reaches this with a plan built at a zero trigger, so its
- * prefix is already summarized and the prune branch is unreachable for it by
- * construction rather than by a second check here.
+ * Whether Better Compact can answer this compaction, kept free of host calls and
+ * IO so it can be exercised directly.
  */
 export function decideCompaction(input: CompactionDecisionInput): CompactionDecision {
-    const { plan, trigger } = input
+    const { plan } = input
     if (!plan) return { kind: "decline", reason: "no plan for this context" }
 
-    if (!plan.requiresCustomCompaction && isSpeculativeTrigger(trigger)) return { kind: "prune" }
+    // A mid-turn boundary has no durable representation. Mapping it back to the
+    // entry that owns the turn would reinstate the oversized turn the plan split
+    // off, so the committed context would be larger than `afterPruneTokens`
+    // promised — and the committed result is exactly what the host's
+    // post-compaction headroom and retry-fit checks measure. The host's own
+    // `findCutPoint` only ever cuts at a whole turn, so hand this back.
+    if (plan.rawTailItemBoundary !== undefined) {
+        return { kind: "decline", reason: "plan boundary splits a turn" }
+    }
 
     const firstKeptEntryId = firstKeptEntryIdForPlan(
         plan,
@@ -91,19 +92,45 @@ export function decideCompaction(input: CompactionDecisionInput): CompactionDeci
 }
 
 /**
- * The durable summary text for a plan that had to summarize its prefix.
+ * Render the ladder's compacted prefix as the text Oh My Pi will persist.
  *
- * Mirrors core's own summary turn (`[Context Summary]` + summary + reference
- * block) so the text Oh My Pi persists is the text the ladder would have put
- * in the request. Oh My Pi wraps it in its own `<summary>` envelope when it
- * rebuilds context, so this carries no envelope of its own.
+ * The host's durable shape is one summary string plus a contiguous tail, so the
+ * prefix has to arrive as text. Serializing the *transformed* prefix — rather
+ * than reaching for `plan.prefixSummary` — is what makes the assistant-run
+ * summaries this compaction paid for actually land: they live in the collapsed
+ * run items, alongside the one-line tool stubs and the user turns the ladder
+ * preserved verbatim. `plan.prefixSummary` is only populated when the ladder had
+ * to fall back to a rolling digest, and core carries a prior plan's digest
+ * forward whenever the boundary is unchanged, so reading it would persist the
+ * older deterministic text and silently discard every summary just fetched.
+ *
+ * Oh My Pi wraps the result in its own `<summary>` envelope when it rebuilds
+ * context, so this carries no envelope of its own.
  */
-export function formatCompactionSummary(plan: BoundaryContextPlan): string {
-    const summary = plan.prefixSummary?.trim()
-    if (!summary) return ""
+export function formatDurableCompaction(
+    plan: BoundaryContextPlan,
+    turns: Turn[],
+    spec: LadderSpec,
+): string {
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    const tailKeys = new Set(turns.slice(plan.rawTailStartIndex).map((turn) => turn.key))
+
+    const body: string[] = []
+    for (const turn of transformed) {
+        if (tailKeys.has(turn.key)) continue
+        const rendered = turn.items
+            .map((item) => spec.codec.transcriptLine(item).trim())
+            .filter(Boolean)
+        if (rendered.length === 0) continue
+        body.push(`### ${turn.role === "user" ? "User" : "Assistant"}\n${rendered.join("\n")}`)
+    }
+    if (body.length === 0) return ""
+
     return [
-        "[Context Summary]",
-        summary,
+        "[Better Compact context]",
+        "Older context was compacted by pruning rather than replaced by a single summary: tool calls that were dropped leave one-line stubs, long assistant runs are summarized, and user turns are preserved as written. The raw history is on disk at the reference below — read it instead of guessing.",
+        "",
+        ...body,
         "",
         `## Reference Files\n- "${plan.transcript.relativePath}"`,
     ].join("\n")

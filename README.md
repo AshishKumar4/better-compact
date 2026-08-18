@@ -98,11 +98,12 @@ omp plugin install @better-compact/pi
 ```
 
 The same package carries an Oh My Pi entry, and this is the one adapter where Better Compact _owns_
-automatic compaction rather than coexisting with it. Every run the host decides on — manual, the
-pre-prompt and mid-turn thresholds, idle maintenance, and overflow recovery — is answered by the
-ladder: pruning alone when that reaches the target, and the ladder's own summary plus raw tail when
-pruning is exhausted. The native summarizer never runs, while Oh My Pi keeps ownership of when to
-compact, retry, rollback and accounting. Details: [packages/pi/README.md](packages/pi/README.md).
+compaction rather than coexisting with it. Every run the host decides on — manual, the pre-prompt and
+mid-turn thresholds, idle maintenance, and overflow recovery — is answered by the ladder, and what
+gets persisted is the ladder's own output rather than a prose summary: user turns as written, dropped
+tool calls as one-line stubs, long assistant runs summarized, and a pointer to the raw transcript.
+The native summarizer never runs, while Oh My Pi keeps ownership of when to compact, retry, rollback
+and accounting. Details: [packages/pi/README.md](packages/pi/README.md).
 
 ## Development
 

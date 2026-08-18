@@ -159,33 +159,37 @@ async function main(): Promise<void> {
         signal: AbortSignal.timeout(25_000),
     }
 
-    await call("auto_compaction_start", { reason: "threshold", action: "snapcompact" })
-    const speculative = (await call("session_before_compact", compactEvent)) as
-        { cancel?: boolean; compaction?: unknown } | undefined
-    assert.equal(
-        speculative?.cancel,
-        true,
-        "a threshold trigger the ladder can prune must decline the summary",
-    )
-    assert.ok(
-        recorded.entries.some((entry) => entry.customType === "better-compact-plan"),
-        "the declined run must still persist the plan that replaces it",
-    )
-    label("threshold trigger declined the native summary and persisted a plan instead")
-    await call("auto_compaction_end", { action: "snapcompact", aborted: true, willRetry: false })
+    // Every trigger commits: `{cancel:true}` would be re-entered by the host on
+    // the next turn and at every mid-turn tool boundary, because its threshold
+    // is anchored on stored history that request pruning cannot move.
+    for (const reason of ["threshold", "idle", "overflow", "incomplete"] as const) {
+        await call("auto_compaction_start", { reason, action: "context-full" })
+        const result = (await call("session_before_compact", compactEvent)) as
+            | { cancel?: boolean; compaction?: Record<string, unknown> }
+            | undefined
+        assert.notEqual(result?.cancel, true, `${reason} must not cancel the host's run`)
+        assert.ok(result?.compaction, `${reason} must return a durable compaction`)
+        await call("auto_compaction_end", { action: "context-full", aborted: false, willRetry: false })
+    }
+    label("every automatic trigger committed a Better Compact compaction")
 
     await call("auto_compaction_start", { reason: "overflow", action: "context-full" })
     const recovery = (await call("session_before_compact", compactEvent)) as
-        { cancel?: boolean; compaction?: Record<string, unknown> } | undefined
-    assert.notEqual(recovery?.cancel, true, "an overflow run must never be declined")
+        | { cancel?: boolean; compaction?: Record<string, unknown> }
+        | undefined
     assert.ok(recovery?.compaction, "an overflow run must return a durable compaction")
     const compaction = recovery.compaction
     assert.ok(
         branch.entries.some((entry) => entry.id === compaction.firstKeptEntryId),
         "firstKeptEntryId must name a real entry on the branch",
     )
-    assert.match(String(compaction.summary), /^\[Context Summary\]/)
+    assert.match(String(compaction.summary), /^\[Better Compact context\]/)
     assert.match(String(compaction.summary), /## Reference Files/)
+    assert.match(
+        String(compaction.summary),
+        /please do task 0/,
+        "the durable context must keep the user turns the ladder preserved",
+    )
     assert.equal(compaction.tokensBefore, 7_200)
     label("overflow trigger returned a committed Better Compact compaction")
 
@@ -207,7 +211,7 @@ async function main(): Promise<void> {
         committed.length < messages.length,
         `committing the compaction must shrink context (${messages.length} -> ${committed.length})`,
     )
-    assert.match(JSON.stringify(committed), /\[Context Summary\]/)
+    assert.match(JSON.stringify(committed), /\[Better Compact context\]/)
     label(`host replayed the compaction as ${committed.length} messages`)
 
     process.stdout.write("\nOK — Better Compact owns compaction in Oh My Pi.\n")

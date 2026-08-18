@@ -37,8 +37,7 @@ import {
 import { ompCodec, ompSpec } from "./omp/codec"
 import {
     decideCompaction,
-    isSpeculativeTrigger,
-    formatCompactionSummary,
+    formatDurableCompaction,
     type CompactionTrigger,
 } from "./omp/compaction"
 import type { OmpAgentMessage } from "./omp/host"
@@ -61,11 +60,19 @@ import { WidgetComponent, type WidgetState } from "./tui/widget"
  */
 const COMPACT_SUMMARY_DEADLINE_MS = 20_000
 
-/** Compaction strategies that never reach `session_before_compact`. */
-const UNREACHED_STRATEGIES: Record<string, string> = {
-    handoff: "hands the session off before the compaction hook runs",
-    shake: "runs inline before the compaction hook runs",
-    off: "disables context maintenance altogether",
+/**
+ * Strategies under which Better Compact does not reliably own compaction.
+ *
+ * `handoff` and `shake` each run their own path first and only fall back into
+ * the context-full body that consults this hook — handoff when it produces no
+ * document, shake when it finds nothing eligible to drop — so ownership is
+ * intermittent rather than absent. `off` disables maintenance entirely and never
+ * reaches the hook at all.
+ */
+const UNRELIABLE_STRATEGIES: Record<string, string> = {
+    handoff: "hands the session off first and only falls back to this hook when it produces no document",
+    shake: "drops content inline first and only falls back to this hook when it finds nothing to drop",
+    off: "disables context maintenance altogether, so the hook never runs",
 }
 
 const logger: Logger = {
@@ -95,7 +102,8 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
      * enough: same-file tree navigation keeps the id and changes the leaf.
      */
     let generation = 0
-    let summarizingGeneration: number | undefined
+    /** Single-flight: one background summary upgrade at a time per session. */
+    let summarizing = false
     /**
      * The reason Oh My Pi is compacting. `auto_compaction_start` fires before
      * `session_before_compact`; a compact event with nothing recorded here is
@@ -175,11 +183,11 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         } catch {
             return
         }
-        const reason = strategy === undefined ? undefined : UNREACHED_STRATEGIES[strategy]
+        const reason = strategy === undefined ? undefined : UNRELIABLE_STRATEGIES[strategy]
         if (!reason) return
         strategyWarned = true
         ctx.ui.notify(
-            `Better Compact cannot own automatic compaction while compaction.strategy is "${strategy}" — it ${reason}. Set it to "context-full" or "snapcompact".`,
+            `Better Compact does not reliably own automatic compaction while compaction.strategy is "${strategy}" — it ${reason}. Set it to "context-full" or "snapcompact".`,
             "warning",
         )
     }
@@ -276,62 +284,58 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
                 ...planInputs(ctx, contextLimit),
                 force: true,
                 priorPlan: priorPlan ?? undefined,
-                // A recovery run has to leave durable headroom behind, and the
-                // only durable shape the host can persist is one summary plus a
-                // raw tail. Pruning is request-level, so it cannot answer this
-                // trigger: dropping the trigger to zero makes the ladder apply
-                // its prefix summary instead of stopping the moment staged
-                // pruning met the target.
-                ...(isSpeculativeTrigger(trigger) ? {} : { triggerRatio: 0 }),
             }
             const plan = buildPlan(turns, inputs, ompSpec)
-            if (!plan) return
+            const decide = (candidate: typeof plan) =>
+                decideCompaction({
+                    trigger,
+                    plan: candidate,
+                    turns,
+                    messages,
+                    branchEntries: event.branchEntries,
+                })
 
-            const decision = decideCompaction({
-                trigger,
-                plan,
-                turns,
-                messages,
-                branchEntries: event.branchEntries,
-            })
-
-            if (decision.kind === "decline") {
+            // Gate before paying for summaries, then decide again on the plan
+            // that is actually committed so the boundary and the text agree.
+            const gate = decide(plan)
+            if (gate.kind === "decline" || !plan) {
                 logger.warn("Better Compact declined this compaction", {
+                    trigger,
+                    reason: gate.kind === "decline" ? gate.reason : "no plan",
+                })
+                return
+            }
+
+            await writeTranscript(plan, { transcripts, logger, codec: ompCodec })
+            const finalPlan = await summarizeWithinDeadline(ctx, turns, inputs, plan, event.signal)
+            const decision = decide(finalPlan)
+            if (decision.kind === "decline") {
+                logger.warn("Better Compact declined this compaction after summarizing", {
                     trigger,
                     reason: decision.reason,
                 })
                 return
             }
 
-            if (decision.kind === "prune") {
-                await writeTranscript(plan, { transcripts, logger, codec: ompCodec })
-                await plans.save(sessionKey, toPlanSnapshot(plan))
-                if (plan.summaryJobs.length > 0) {
-                    void upgradePlanWithSummaries(ctx, turns, contextLimit, plan)
-                }
-                updateWidget(ctx, {
-                    planActive: true,
-                    contextLimit,
-                    contextTokens: plan.afterPruneTokens,
-                    prunedTokens: Math.max(0, plan.beforeTokens - plan.afterPruneTokens),
-                })
-                return { cancel: true }
+            const summary = formatDurableCompaction(finalPlan, turns, ompSpec)
+            if (!summary) {
+                logger.warn("Better Compact produced no durable context", { trigger })
+                return
             }
 
-            await writeTranscript(plan, { transcripts, logger, codec: ompCodec })
-            const finalPlan = await summarizeWithinDeadline(ctx, turns, inputs, plan, event.signal)
-            const summary = formatCompactionSummary(finalPlan)
-            if (!summary) return
-
+            const reclaimed = Math.max(0, finalPlan.beforeTokens - finalPlan.afterPruneTokens)
+            updateWidget(ctx, {
+                planActive: false,
+                contextLimit,
+                contextTokens: finalPlan.afterPruneTokens,
+                prunedTokens: undefined,
+            })
             return {
                 compaction: {
                     summary,
-                    shortSummary: `Better Compact pruned ${formatTokens(
-                        Math.max(0, finalPlan.beforeTokens - finalPlan.afterPruneTokens),
-                    )} tokens and summarized the older prefix.`,
+                    shortSummary: `Better Compact reclaimed ${formatTokens(reclaimed)} tokens by pruning older context.`,
                     firstKeptEntryId: decision.firstKeptEntryId,
                     tokensBefore: event.preparation.tokensBefore,
-                    preserveData: { betterCompact: { snapshot: toPlanSnapshot(finalPlan) } },
                 },
             }
         } catch (error) {
@@ -484,7 +488,14 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
             return (
                 buildPlan(
                     turns,
-                    { ...inputs, priorPlan: toPlanSnapshot(plan), assistantSummaries: summaries },
+                    {
+                        ...inputs,
+                        // Keep the boundary and everything already pruned, but do
+                        // not carry the prior digest forward: the rebuild exists
+                        // to fold in the summaries just fetched.
+                        priorPlan: { ...toPlanSnapshot(plan), prefixSummary: undefined },
+                        assistantSummaries: summaries,
+                    },
                     ompSpec,
                 ) ?? plan
             )
@@ -505,8 +516,8 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         plan: BoundaryContextPlan,
     ): Promise<void> {
         const startedAt = generation
-        if (summarizingGeneration !== undefined) return
-        summarizingGeneration = startedAt
+        if (summarizing) return
+        summarizing = true
         try {
             const summaries = await summaryScheduler.summarize({
                 sessionKey: plan.sessionId,
@@ -533,7 +544,7 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         } catch (error) {
             logger.warn("Better Compact summary upgrade failed", { error: errorText(error) })
         } finally {
-            summarizingGeneration = undefined
+            summarizing = false
         }
     }
 }
