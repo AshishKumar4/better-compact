@@ -1,19 +1,14 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import {
     buildPlan,
     COMPACTION_PRESETS,
     createEngine,
     createSummaryScheduler,
-    DEFAULT_CUSTOM_COMPACTION,
-    normalizeCompactionCustom,
     resolveCompactionProfile,
     toPlanSnapshot,
     writeTranscript,
     type BoundaryContextPlan,
     type CompactionConfig,
-    type CompactionCustomSettings,
-    type CompactionPreset,
     type EnginePorts,
     type Logger,
     type Turn,
@@ -21,29 +16,42 @@ import {
 import {
     CONFIG_DIR_NAME,
     getAgentDir,
+    getSettingsListTheme,
     sessionEntryToContextMessages,
+    type ContextEvent,
     type ExtensionAPI,
     type ExtensionContext,
 } from "@earendil-works/pi-coding-agent"
-import { piCodec, piSpec } from "./codec"
+import { SettingsList } from "@earendil-works/pi-tui"
+import { createPiFamilyCodec, piSpec } from "./codec"
+import {
+    commandPreset,
+    CONFIG_FILE,
+    errorText,
+    loadCompactionConfig,
+    mergeCompactionConfig,
+    readConfigObject,
+    writeConfigObject,
+} from "./config"
+import type { AssertHostRolesModelled } from "./messages"
 import { createPlanStore } from "./plan-store"
 import { createSummarizer } from "./summarizer"
 import { createTranscriptStore } from "./transcripts"
 import { formatTokens } from "./tui/format"
-import { ReportComponent } from "./tui/report"
+import type { HostSettingsUi } from "./tui/host"
+import { ReportComponent, reportFromPlan } from "./tui/report"
 import { createSettingsComponent } from "./tui/settings"
 import { WidgetComponent, type WidgetState } from "./tui/widget"
 
-const CONFIG_FILE = "better-compact.json"
-const DEFAULT_CONFIG: CompactionConfig = {
-    automatic: true,
-    preset: "light",
-    summaryEffort: "inherit",
-    custom: { ...DEFAULT_CUSTOM_COMPACTION },
-}
+// Fails typecheck if pi adds a message role the shared codec does not model.
+type PiAgentMessage = ContextEvent["messages"][number]
+type _PiRolesModelled = AssertHostRolesModelled<PiAgentMessage["role"]>
 
-type CompactionConfigOverride = Omit<Partial<CompactionConfig>, "custom"> & {
-    custom?: Partial<CompactionCustomSettings>
+const piCodec = createPiFamilyCodec<PiAgentMessage>()
+
+const settingsUi: HostSettingsUi<SettingsList> = {
+    createSettingsList: (items, visibleRows, onChange, onDone) =>
+        new SettingsList(items, visibleRows, getSettingsListTheme(), onChange, onDone),
 }
 
 const logger: Logger = {
@@ -89,7 +97,9 @@ export default function betterCompact(pi: ExtensionAPI) {
         }
         await ctx.ui.custom<null>(
             (_tui, theme, _keybindings, done) =>
-                new ReportComponent(theme, { plan, pendingSummaries }, () => done(null)),
+                new ReportComponent(theme, reportFromPlan(plan, pendingSummaries), () =>
+                    done(null),
+                ),
             { overlay: true },
         )
     }
@@ -117,7 +127,13 @@ export default function betterCompact(pi: ExtensionAPI) {
         if (messages.length > 0) {
             plans.adopt(ctx.sessionManager.getSessionId(), piCodec.encode(messages))
         }
-        config = await loadCompactionConfig(ctx)
+        // Project files are executable policy: only honor them after pi has
+        // established trust for the working tree.
+        config = await loadCompactionConfig(
+            logger,
+            join(getAgentDir(), CONFIG_FILE),
+            ctx.isProjectTrusted() ? join(ctx.cwd, CONFIG_DIR_NAME, CONFIG_FILE) : null,
+        )
         profile = resolveCompactionProfile({ compaction: config })
     })
 
@@ -157,7 +173,9 @@ export default function betterCompact(pi: ExtensionAPI) {
                 planActive: true,
                 contextLimit,
                 contextTokens: plan?.afterPruneTokens ?? ctx.getContextUsage()?.tokens ?? undefined,
-                prunedTokens: plan ? Math.max(0, plan.beforeTokens - plan.afterPruneTokens) : widget.prunedTokens,
+                prunedTokens: plan
+                    ? Math.max(0, plan.beforeTokens - plan.afterPruneTokens)
+                    : widget.prunedTokens,
             })
             return { messages: piCodec.decode(result.turns, event.messages) }
         } catch (error) {
@@ -242,10 +260,7 @@ export default function betterCompact(pi: ExtensionAPI) {
                     planActive: true,
                     contextLimit,
                     contextTokens: finalPlan.afterPruneTokens,
-                    prunedTokens: Math.max(
-                        0,
-                        finalPlan.beforeTokens - finalPlan.afterPruneTokens,
-                    ),
+                    prunedTokens: Math.max(0, finalPlan.beforeTokens - finalPlan.afterPruneTokens),
                     summarizing: undefined,
                 })
                 await showReport(ctx, finalPlan, 0)
@@ -266,7 +281,8 @@ export default function betterCompact(pi: ExtensionAPI) {
                 return
             }
             const result = await ctx.ui.custom<{ changed: boolean; config: CompactionConfig }>(
-                (_tui, theme, _keybindings, done) => createSettingsComponent(theme, config, done),
+                (_tui, _theme, _keybindings, done) =>
+                    createSettingsComponent(settingsUi, config, done),
                 { overlay: true },
             )
             if (!result?.changed) return
@@ -297,10 +313,7 @@ export default function betterCompact(pi: ExtensionAPI) {
         handler: async (args, ctx) => {
             const preset = commandPreset(args.trim())
             if (!preset) {
-                ctx.ui.notify(
-                    "Usage: /better-compact-preset <light|moderate|max>",
-                    "warning",
-                )
+                ctx.ui.notify("Usage: /better-compact-preset <light|moderate|max>", "warning")
                 return
             }
             const path = join(getAgentDir(), CONFIG_FILE)
@@ -359,124 +372,4 @@ export default function betterCompact(pi: ExtensionAPI) {
             summarizing.delete(sessionKey)
         }
     }
-}
-
-async function loadCompactionConfig(ctx: ExtensionContext): Promise<CompactionConfig> {
-    const globalPath = join(getAgentDir(), CONFIG_FILE)
-    const global = await readConfigOverride(globalPath)
-    // Project files are executable policy: only honor them after pi has
-    // established trust for the working tree.
-    const project = ctx.isProjectTrusted()
-        ? await readConfigOverride(join(ctx.cwd, CONFIG_DIR_NAME, CONFIG_FILE))
-        : null
-    return mergeCompactionConfig(global ?? {}, project ?? {})
-}
-
-async function readConfigOverride(path: string): Promise<CompactionConfigOverride | null> {
-    try {
-        const value = await readConfigObject(path)
-        return value ? parseCompactionConfig(value) : null
-    } catch (error) {
-        logger.warn("Better Compact config ignored", { path, error: errorText(error) })
-        return null
-    }
-}
-
-async function readConfigObject(path: string): Promise<Record<string, unknown> | null> {
-    try {
-        const value: unknown = JSON.parse(await readFile(path, "utf-8"))
-        if (!isRecord(value)) throw new Error("config must be a JSON object")
-        return value
-    } catch (error) {
-        if (isNodeError(error) && error.code === "ENOENT") return null
-        throw error
-    }
-}
-
-async function writeConfigObject(path: string, value: Record<string, unknown>): Promise<void> {
-    await mkdir(getAgentDir(), { recursive: true })
-    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
-    try {
-        await writeFile(temporary, `${JSON.stringify(value, null, 4)}\n`, { mode: 0o600 })
-        await rename(temporary, path)
-    } catch (error) {
-        await rm(temporary, { force: true })
-        throw error
-    }
-}
-
-function parseCompactionConfig(value: Record<string, unknown>): CompactionConfigOverride {
-    return {
-        automatic: typeof value.automatic === "boolean" ? value.automatic : undefined,
-        preset: isCompactionPreset(value.preset) ? value.preset : undefined,
-        summaryEffort: isSummaryEffort(value.summaryEffort) ? value.summaryEffort : undefined,
-        custom: parseCustomConfig(value.custom),
-    }
-}
-
-function parseCustomConfig(value: unknown): Partial<CompactionCustomSettings> {
-    if (!isRecord(value)) return {}
-    const custom: Partial<CompactionCustomSettings> = {}
-    if (typeof value.triggerPercent === "number" && Number.isFinite(value.triggerPercent)) {
-        custom.triggerPercent = value.triggerPercent
-    }
-    if (typeof value.targetPercent === "number" && Number.isFinite(value.targetPercent)) {
-        custom.targetPercent = value.targetPercent
-    }
-    if (typeof value.recentToolTokens === "number" && Number.isFinite(value.recentToolTokens)) {
-        custom.recentToolTokens = value.recentToolTokens
-    }
-    if (
-        typeof value.summarizerConcurrency === "number" &&
-        Number.isFinite(value.summarizerConcurrency)
-    ) {
-        custom.summarizerConcurrency = value.summarizerConcurrency
-    }
-    return custom
-}
-
-function mergeCompactionConfig(...overrides: CompactionConfigOverride[]): CompactionConfig {
-    let config: CompactionConfig = {
-        ...DEFAULT_CONFIG,
-        custom: { ...DEFAULT_CONFIG.custom },
-    }
-    for (const override of overrides) {
-        config = {
-            automatic: override.automatic ?? config.automatic,
-            preset: override.preset ?? config.preset,
-            summaryEffort: override.summaryEffort ?? config.summaryEffort,
-            custom: normalizeCompactionCustom({ ...config.custom, ...override.custom }),
-        }
-    }
-    return config
-}
-
-function commandPreset(value: string): Exclude<CompactionPreset, "custom"> | null {
-    return value === "light" || value === "moderate" || value === "max" ? value : null
-}
-
-function isCompactionPreset(value: unknown): value is CompactionPreset {
-    return value === "light" || value === "moderate" || value === "max" || value === "custom"
-}
-
-function isSummaryEffort(value: unknown): value is CompactionConfig["summaryEffort"] {
-    return (
-        value === "inherit" ||
-        value === "low" ||
-        value === "medium" ||
-        value === "high" ||
-        value === "max"
-    )
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-    return error instanceof Error && "code" in error
-}
-
-function errorText(error: unknown): string {
-    return error instanceof Error ? error.message : String(error)
 }

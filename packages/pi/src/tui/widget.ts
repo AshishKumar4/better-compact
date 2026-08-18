@@ -1,6 +1,5 @@
-import type { Component } from "@earendil-works/pi-tui"
-import type { Theme } from "@earendil-works/pi-coding-agent"
 import { formatTokens, meter } from "./format"
+import type { HostComponent, HostTheme } from "./host"
 
 const METER_WIDTH = 18
 
@@ -14,10 +13,11 @@ export interface WidgetState {
 }
 
 // Docked above the editor, so the state of the session's context is visible
-// without running a command. pi has no equivalent surface in OpenCode.
-export class WidgetComponent implements Component {
+// without running a command. Both pi-family hosts expose this surface; the
+// OpenCode adapter has no equivalent and reports through its dialogs instead.
+export class WidgetComponent implements HostComponent {
     constructor(
-        private readonly theme: Theme,
+        private readonly theme: HostTheme,
         private readonly state: WidgetState,
     ) {}
 
@@ -30,7 +30,7 @@ export class WidgetComponent implements Component {
     }
 }
 
-export function renderWidgetLine(theme: Theme, state: WidgetState): string {
+export function renderWidgetLine(theme: HostTheme, state: WidgetState): string {
     const parts: string[] = [theme.fg("accent", "◆ Better Compact")]
 
     if (state.contextLimit && state.contextLimit > 0 && state.contextTokens !== undefined) {
@@ -52,10 +52,7 @@ export function renderWidgetLine(theme: Theme, state: WidgetState): string {
 
     if (state.summarizing && state.summarizing.total > 0) {
         parts.push(
-            theme.fg(
-                "warning",
-                `summarizing ${state.summarizing.done}/${state.summarizing.total}`,
-            ),
+            theme.fg("warning", `summarizing ${state.summarizing.done}/${state.summarizing.total}`),
         )
     }
 

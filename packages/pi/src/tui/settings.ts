@@ -1,7 +1,5 @@
 import type { CompactionConfig, CompactionPreset, SummaryEffort } from "@better-compact/core"
-import type { Component } from "@earendil-works/pi-tui"
-import { SettingsList } from "@earendil-works/pi-tui"
-import { getSettingsListTheme, type Theme } from "@earendil-works/pi-coding-agent"
+import type { HostSettingsUi } from "./host"
 
 const PRESETS: CompactionPreset[] = ["light", "moderate", "max"]
 const EFFORTS: SummaryEffort[] = ["inherit", "low", "medium", "high", "max"]
@@ -18,13 +16,14 @@ export interface SettingsResult {
     config: CompactionConfig
 }
 
-// pi ships the SettingsList widget and its theme, so the panel matches every
-// other pi settings surface instead of inventing a look.
-export function createSettingsComponent(
-    theme: Theme,
+// The host ships the SettingsList widget and its theme, so the panel matches
+// every other settings surface in that host instead of inventing a look. Each
+// entrypoint injects them from its own package scope.
+export function createSettingsComponent<TComponent>(
+    ui: HostSettingsUi<TComponent>,
     current: CompactionConfig,
     done: (result: SettingsResult) => void,
-): Component {
+): TComponent {
     let config: CompactionConfig = { ...current }
     let changed = false
 
@@ -39,7 +38,8 @@ export function createSettingsComponent(
         {
             id: "preset",
             label: "Compaction strength",
-            description: PRESET_HINT[config.preset] ?? "Custom thresholds from better-compact.json.",
+            description:
+                PRESET_HINT[config.preset] ?? "Custom thresholds from better-compact.json.",
             currentValue: config.preset,
             values: config.preset === "custom" ? [...PRESETS, "custom"] : PRESETS,
         },
@@ -52,11 +52,10 @@ export function createSettingsComponent(
         },
     ]
 
-    return new SettingsList(
+    return ui.createSettingsList(
         items,
         10,
-        getSettingsListTheme(),
-        (id: string, value: string) => {
+        (id, value) => {
             changed = true
             if (id === "automatic") config = { ...config, automatic: value === "on" }
             else if (id === "preset") config = { ...config, preset: value as CompactionPreset }

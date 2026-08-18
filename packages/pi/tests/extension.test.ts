@@ -4,14 +4,16 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import type { PlanSnapshot } from "@better-compact/core"
-import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import betterCompact from "../src/extension"
 import type { PiMessage } from "../src/codec"
 import { PLAN_ENTRY_TYPE } from "../src/plan-store"
 import { overTriggerConversation } from "./helpers"
 
+// The harness fakes the host, so the event is described structurally: the
+// adapter's own handler is typed against pi's ContextEvent.
 type ContextHandler = (
-    event: ContextEvent,
+    event: { type: "context"; messages: PiMessage[] },
     ctx: ExtensionContext,
 ) => Promise<{ messages?: PiMessage[] } | undefined | void>
 
@@ -160,7 +162,11 @@ test("a fork adopts a persisted plan only after its live prefix validates", asyn
     const inherited = await contextHandler({ type: "context", messages }, forkCtx)
 
     assert.deepEqual(inherited?.messages, original?.messages)
-    assert.equal(entries.length, entryCount, "a validated inherited plan must replay without rebuild")
+    assert.equal(
+        entries.length,
+        entryCount,
+        "a validated inherited plan must replay without rebuild",
+    )
 })
 
 test("a fork does not adopt a persisted plan after its live prefix diverges", async () => {
@@ -204,7 +210,10 @@ test("missing config uses the light preset", async () => {
     })
     for (const handler of sessionHandlers) await handler({ reason: "startup" }, ctx)
 
-    const result = await contextHandler({ type: "context", messages: overTriggerConversation() }, ctx)
+    const result = await contextHandler(
+        { type: "context", messages: overTriggerConversation() },
+        ctx,
+    )
     assert.equal(result, undefined)
     assert.equal(entries.length, 0)
 })
@@ -216,7 +225,10 @@ test("global config selects the compaction preset", async () => {
     })
     for (const handler of sessionHandlers) await handler({ reason: "startup" }, ctx)
 
-    const result = await contextHandler({ type: "context", messages: overTriggerConversation() }, ctx)
+    const result = await contextHandler(
+        { type: "context", messages: overTriggerConversation() },
+        ctx,
+    )
     assert.ok(result?.messages, "moderate must trigger where light stays below threshold")
 })
 
@@ -228,7 +240,10 @@ test("project config overrides the global preset", async () => {
     })
     for (const handler of sessionHandlers) await handler({ reason: "startup" }, ctx)
 
-    const result = await contextHandler({ type: "context", messages: overTriggerConversation() }, ctx)
+    const result = await contextHandler(
+        { type: "context", messages: overTriggerConversation() },
+        ctx,
+    )
     assert.ok(result?.messages, "moderate must trigger where light stays below threshold")
 })
 
