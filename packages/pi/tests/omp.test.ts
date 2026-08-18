@@ -5,7 +5,7 @@ import { ompSpec } from "../src/omp/codec"
 import {
     decideCompaction,
     firstKeptEntryIdForPlan,
-    formatCompactionSummary,
+    formatDurableCompaction,
     type BranchEntry,
     type CompactionDecision,
     type CompactionTrigger,
@@ -74,68 +74,44 @@ function decide(
     })
 }
 
-test("a speculative trigger that pruning can satisfy declines the summary", () => {
+test("every trigger commits a compaction rather than cancelling the host's run", () => {
+    // `{cancel:true}` is not a quiet answer: the host anchors its threshold on
+    // stored history, which request pruning cannot move, so a declined run is
+    // re-entered every turn and every mid-turn tool boundary.
     const messages = overTriggerConversation()
     const branch = branchOf(messages)
     const { plan, turns } = planFor(messages)
-    assert.equal(
-        plan.requiresCustomCompaction,
-        false,
-        "the ladder should reach target by pruning this conversation",
+
+    for (const trigger of ["threshold", "idle", "overflow", "incomplete", "manual"] as const) {
+        const decision = decide(trigger, plan, turns, branch)
+        assert.equal(decision.kind, "compact", `${trigger} must commit a compaction`)
+    }
+})
+
+test("a plan whose boundary splits a turn is handed back to the host", () => {
+    // An item boundary only appears for a turn that alone exceeds the target.
+    // Rounding it out to the whole turn would reinstate that turn and leave the
+    // committed context bigger than the plan promised, which is what the host's
+    // post-compaction headroom and retry-fit checks measure.
+    const messages = overTriggerConversation()
+    messages.push(
+        assistantMessage(
+            Array.from({ length: 12 }, (_, index) => ({
+                type: "text" as const,
+                text: `chunk ${index} ${"z".repeat(2_000)}`,
+            })),
+            { timestamp: 9_000 },
+        ),
+    )
+    const branch = branchOf(messages)
+    const { plan, turns } = planFor(messages, 6_000)
+    assert.ok(
+        plan.rawTailItemBoundary,
+        "expected the oversized trailing turn to force an item boundary",
     )
 
-    for (const trigger of ["threshold", "idle"] as const) {
-        assert.deepEqual(decide(trigger, plan, turns, branch), { kind: "prune" })
-    }
-})
-
-test("recovery triggers never decline: overflow and incomplete always compact", () => {
-    const messages = overTriggerConversation()
-    const branch = branchOf(messages)
-    const { plan, turns } = planFor(messages)
-    assert.equal(plan.requiresCustomCompaction, false)
-
-    for (const trigger of ["overflow", "incomplete"] as const) {
-        const decision = decide(trigger, plan, turns, branch)
-        assert.equal(
-            decision.kind,
-            "compact",
-            `${trigger} must produce headroom, never a cancelled run`,
-        )
-    }
-})
-
-test("manual compaction always commits rather than pruning", () => {
-    const messages = overTriggerConversation()
-    const branch = branchOf(messages)
-    const { plan, turns } = planFor(messages)
-
-    const decision = decide("manual", plan, turns, branch)
-    assert.equal(decision.kind, "compact")
-})
-
-test("a plan that exhausted pruning compacts even on a speculative trigger", () => {
-    // One enormous turn the staged ladder cannot shrink below target forces the
-    // prefix summary, which is the `requiresCustomCompaction` path.
-    const messages: PiMessage[] = []
-    let at = 1_000
-    for (let round = 0; round < 4; round++) {
-        messages.push(userMessage(`task ${round} ${"u".repeat(6_000)}`, at++))
-        messages.push(
-            assistantMessage([{ type: "text", text: `done ${round} ${"a".repeat(6_000)}` }], {
-                timestamp: at++,
-            }),
-        )
-    }
-    messages.push(userMessage("wrap up", at++))
-    const branch = branchOf(messages)
-    const { plan, turns } = planFor(messages, 4_000)
-    assert.equal(plan.requiresCustomCompaction, true)
-
-    const decision = decide("threshold", plan, turns, branch)
-    assert.equal(decision.kind, "compact")
-    if (decision.kind !== "compact") return
-    assert.ok(branch.entries.some((entry) => entry.id === decision.firstKeptEntryId))
+    const decision = decide("overflow", plan, turns, branch)
+    assert.deepEqual(decision, { kind: "decline", reason: "plan boundary splits a turn" })
 })
 
 test("no plan declines the run so native compaction still happens", () => {
@@ -192,22 +168,27 @@ test("a boundary on a synthesized message walks back to a real entry, never past
     assert.ok(keptFrom < boundaryIndex, "walking back must keep more raw history, never less")
 })
 
-test("the durable summary carries the ladder summary and its transcript reference", () => {
-    const plan = {
-        prefixSummary: "  Prior work: shipped the codec.  ",
-        transcript: { relativePath: ".omp/better-compact/s/abc.md" },
-    } as BoundaryContextPlan
+test("the durable context carries the pruned prefix and its transcript reference", () => {
+    const messages = overTriggerConversation()
+    const { plan, turns } = planFor(messages)
 
-    const summary = formatCompactionSummary(plan)
-    assert.match(summary, /^\[Context Summary\]\n/)
-    assert.match(summary, /Prior work: shipped the codec\./)
-    assert.match(summary, /## Reference Files\n- "\.omp\/better-compact\/s\/abc\.md"$/)
+    const summary = formatDurableCompaction(plan, turns, ompSpec)
+    assert.match(summary, /^\[Better Compact context\]\n/)
+    assert.match(summary, /## Reference Files\n- "\/s\/session-1\//)
+
+    // The point of serializing the transformed prefix rather than reading
+    // `plan.prefixSummary`: what the ladder actually did has to survive.
+    assert.match(summary, /please do task 0/, "preserved user turns must survive")
+    assert.match(summary, /\[tool/, "pruned tool calls must leave their stubs")
+
+    // And it must be smaller than the raw prefix it replaces.
+    const rawPrefix = turns
+        .slice(0, plan.rawTailStartIndex)
+        .flatMap((turn) => turn.items.map((item) => ompSpec.codec.transcriptLine(item)))
+        .join("\n").length
+    assert.ok(summary.length < rawPrefix, "the durable context must be smaller than raw history")
 })
 
-test("a plan with no prefix summary yields no durable summary to persist", () => {
-    const plan = { transcript: { relativePath: "x.md" } } as BoundaryContextPlan
-    assert.equal(formatCompactionSummary(plan), "")
-})
 
 test("the todo convention restates the latest plan from the tool result details", () => {
     const messages: PiMessage[] = [

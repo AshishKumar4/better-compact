@@ -63,27 +63,35 @@ trigger it does nothing.
 On Oh My Pi, Better Compact **owns compaction** rather than coexisting with it. Every run the host
 decides on — manual `/better-compact`, the pre-prompt and mid-turn thresholds, idle maintenance, and
 overflow recovery — is answered through `session_before_compact`, and the native summarizer never
-runs. There are two answers, and choosing between them is the whole prune-before-summarize idea:
+runs.
 
-- **Pruning was enough.** The ladder reached its target without summarizing anything, so the run is
-  declined and the persisted plan keeps shrinking each request instead. Nothing is durably lost and
-  no summary is paid for. This applies to the speculative triggers only: `threshold` and `idle`.
-- **Pruning was exhausted.** The prefix has to go, and the ladder's output is already one summary
-  turn plus a raw tail — exactly the shape of an Oh My Pi compaction. It is returned as one, and the
-  host persists it, rebuilds context, rebases accounting and resets dependent state as it would for
-  its own summarizer.
+What gets persisted is the ladder's own output, not a prose summary. The host's durable shape is one
+summary string plus a contiguous tail, so Better Compact serializes its compacted prefix into that
+slot: user turns preserved as written, dropped tool calls reduced to one-line stubs, long assistant
+runs replaced by the summaries it paid a side model for, and a pointer to the raw transcript on disk.
+The recent tail stays untouched, and the host persists, rebuilds context, rebases accounting and
+resets dependent state exactly as it would for its own summarizer.
 
-`overflow` and `incomplete` are recovery runs: the host already has a failed or oversized turn and
-its retry path depends on this compaction leaving real durable headroom. Those are never declined,
-and their plan is built so the prefix summary always applies.
+A run is handed back to the native summarizer only when Better Compact genuinely has no answer: no
+plan for the branch, a branch with no addressable message entry, or a plan whose boundary falls
+mid-turn (the host can only cut at a whole turn, so committing that boundary would leave the context
+larger than the plan promised and fail the host's own headroom check).
 
 Everything else stays the host's job. Oh My Pi keeps ownership of when to compact, the failed-turn
 rollback, model fallbacks, headroom checks, retry and continuation, and the provider-history reset —
 Better Compact replaces only the decision about _what_ the compacted context should be.
 
-`compaction.strategy` must be `context-full` or `snapcompact` for this to apply. Oh My Pi routes
-`handoff` and `shake` to their own inline paths and `off` disables maintenance entirely, so those
-never consult the compaction hook; the extension warns once instead of changing your configuration.
+One thing it deliberately does **not** do is decline a compaction because pruning alone would have
+been enough. `{cancel:true}` looks like the prune-before-summarize answer, but Oh My Pi anchors its
+threshold on stored history — which request-level pruning cannot move — so a declined run is
+re-entered on the next turn and at every mid-turn tool boundary, each time re-planning the whole
+branch and rendering "maintenance cancelled" in the status line. Durably pruning without summarizing
+needs a host seam that can persist non-contiguous history; until Oh My Pi has one, request-level
+pruning between compactions is where that part of the ladder lives.
+
+`compaction.strategy` should be `context-full` or `snapcompact`. Under `handoff` and `shake` the host
+runs its own path first and only falls back to this hook, so ownership is intermittent; under `off`
+maintenance never runs at all. The extension warns once instead of changing your configuration.
 
 ### Automatic compaction (pi)
 

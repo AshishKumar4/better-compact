@@ -6,6 +6,10 @@ const shared = {
     dts: false,
     sourcemap: false,
     define: { __BC_VERSION__: JSON.stringify(version) },
+    // `clean` stays off in both configs: tsup runs an array config concurrently,
+    // so one config wiping dist races the other config emitting into it. The
+    // build script removes dist once, up front, instead.
+    clean: false,
     noExternal: ["@better-compact/core"],
 } as const
 
@@ -18,13 +22,11 @@ export default defineConfig([
     {
         ...shared,
         entry: { extension: "src/extension.ts" },
-        clean: true,
         external: [/^@earendil-works\//],
     },
     {
         ...shared,
         entry: { omp: "src/omp.ts" },
-        clean: false,
         external: [/^@oh-my-pi\//],
     },
 ])

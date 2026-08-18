@@ -7,8 +7,8 @@
  * and every surviving native payload is re-emitted through its opaque handle,
  * so structural types are sufficient and let one codec serve both hosts.
  *
- * Each entrypoint asserts its own host union against {@link PiFamilyMessage}
- * via {@link assertHostMessages}, so a host that adds a message role fails
+ * Each entrypoint asserts its own host role union via
+ * {@link AssertHostRolesModelled}, so a host that adds a message role fails
  * typecheck here instead of silently falling through to `default:` at runtime.
  */
 
@@ -71,13 +71,20 @@ export interface ToolResultMessage {
     details?: unknown
     isError: boolean
     /**
-     * Tool-declared "nothing worth retaining once consumed" (zero matches,
-     * elapsed wait). Oh My Pi sets it; the ladder treats it as prunable ahead
-     * of results that still carry information.
+     * When set, the host has already pruned this result and sends only its text
+     * blocks (`getPrunedToolResultContent`), so image blocks must not be priced.
      */
-    useless?: boolean
+    prunedAt?: number
     timestamp: number
 }
+
+/**
+ * Output metadata the host renders into the message text as a trailing notice
+ * (`formatOutputNotice`). Left opaque: the notice is a handful of short bracketed
+ * clauses plus an unbounded `LSP Diagnostics` block, and the diagnostics text is
+ * the only term large enough to matter for an estimate.
+ */
+export type OutputMeta = Record<string, unknown>
 
 export interface BashExecutionMessage {
     role: "bashExecution"
@@ -87,6 +94,7 @@ export interface BashExecutionMessage {
     cancelled?: boolean
     truncated?: boolean
     fullOutputPath?: string
+    meta?: OutputMeta
     excludeFromContext?: boolean
     timestamp: number
 }
@@ -98,7 +106,7 @@ export interface PythonExecutionMessage {
     output?: string
     exitCode?: number | null
     cancelled?: boolean
-    truncated?: boolean
+    meta?: OutputMeta
     excludeFromContext?: boolean
     timestamp: number
 }
@@ -139,9 +147,20 @@ export interface FileMentionMessage {
     timestamp: number
 }
 
+/**
+ * A committed compaction, replayed into context on every request.
+ *
+ * Oh My Pi carries the snapcompact archive here: with `blocks` the host sends
+ * the bare summary followed by those blocks, otherwise it sends the wrapped
+ * summary followed by `images`. Either payload is real context the model reads,
+ * so leaving it unpriced would make a long archived session look small and let
+ * the trigger fire far too late.
+ */
 export interface CompactionSummaryMessage {
     role: "compactionSummary"
     summary: string
+    blocks?: UserContentBlock[]
+    images?: ImageContent[]
     timestamp: number
 }
 

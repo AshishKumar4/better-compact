@@ -67,7 +67,7 @@ export function reportFromSnapshot(snapshot: PlanSnapshot): ReportInput {
         afterPruneTokens: snapshot.afterPruneTokens,
         targetTokens: snapshot.targetTokens,
         stages: (snapshot.stages ?? []).flatMap((stage) =>
-            stage.status in STAGE_GLYPH
+            Object.hasOwn(STAGE_GLYPH, stage.status)
                 ? [
                       {
                           ...stage,
