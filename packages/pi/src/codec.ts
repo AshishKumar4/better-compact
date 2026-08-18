@@ -9,29 +9,32 @@ import {
     toolsRemainingStage,
     truncate,
     type Codec,
+    type CodecOps,
     type Item,
     type LadderSpec,
     type Turn,
 } from "@better-compact/core"
 import type {
+    AssistantMessage,
     ImageContent,
+    PiFamilyMessage,
     TextContent,
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
-} from "@earendil-works/pi-ai"
-import type { ContextEvent } from "@earendil-works/pi-coding-agent"
+    UserContent,
+    UserContentBlock,
+    UserMessage,
+} from "./messages"
 
-// The message union exactly as pi's context event delivers it. Importing it
-// through ContextEvent also pulls pi-coding-agent's AgentMessage augmentation
-// (bashExecution, custom, branchSummary, compactionSummary) into the program.
-export type PiMessage = ContextEvent["messages"][number]
+/**
+ * The message union both pi-family hosts deliver to a `context` handler. It is
+ * declared structurally in `./messages` so one codec serves pi and Oh My Pi;
+ * each entrypoint asserts its host union against it.
+ */
+export type PiMessage = PiFamilyMessage
 
-type AssistantMessage = Extract<PiMessage, { role: "assistant" }>
 type AssistantContent = AssistantMessage["content"][number]
-type UserMessage = Extract<PiMessage, { role: "user" }>
-type UserContentBlock = TextContent | ImageContent
-type UserContent = string | (TextContent | ImageContent)[]
 
 // One IR tool item owns the ToolCall block and its paired ToolResultMessage:
 // when the ladder drops the item both natives disappear; when it survives,
@@ -41,23 +44,16 @@ export interface ToolPair {
     result?: ToolResultMessage
 }
 
-// pi's context-event messages carry no ids (ids live on session entries, not
-// on AgentMessages), so identity is a content hash with occurrence ordinals —
-// stable across requests because the session prefix is append-only.
-export const piCodec: Codec<PiMessage> = {
-    encode(messages) {
-        const claimKey = keyDeduper()
-        return groupMessages(messages).map((group) => encodeGroup(group, claimKey))
-    },
-
-    decode(turns, _messages) {
-        return turns.flatMap(decodeTurn)
-    },
-
+/**
+ * The estimation and transcript half of the codec: pure functions over the
+ * structural model, so both hosts share one instance.
+ */
+export const piFamilyCodecOps: CodecOps = {
     estimateTurns(turns) {
-        // Core countTokens scale (chars/4) over pi's own model serialization:
-        // mirrors convertToLlm (pi core/messages.ts) + estimateMessageTokens
-        // (pi-ai utils/estimate.ts), which count content chars only.
+        // Core countTokens scale (chars/4) over the host's own model
+        // serialization: mirrors convertToLlm (core/messages.ts) +
+        // estimateMessageTokens (pi-ai utils/estimate.ts), which count content
+        // chars only.
         const chars = turns.reduce((sum, turn) => sum + charsOfTurn(turn), 0)
         return Math.max(0, Math.round(chars / 4))
     },
@@ -76,28 +72,68 @@ export const piCodec: Codec<PiMessage> = {
     },
 }
 
+/**
+ * Build a codec typed by one host's own message union.
+ *
+ * pi-family context-event messages carry no ids (ids live on session entries,
+ * not on AgentMessages), so identity is a content hash with occurrence
+ * ordinals — stable across requests because the session prefix is append-only.
+ *
+ * The two casts below are the whole host boundary. Every surviving native
+ * payload leaves through the handle it arrived on, and the only value this
+ * module ever constructs is a synthetic user text message, which both hosts
+ * accept. {@link AssertHostRolesModelled} is what keeps the structural model
+ * honest about the roles it must handle.
+ */
+export function createPiFamilyCodec<TNative>(): Codec<TNative> {
+    return {
+        encode(native) {
+            const claimKey = keyDeduper()
+            const messages = native as unknown as PiFamilyMessage[]
+            return groupMessages(messages).map((group) => encodeGroup(group, claimKey))
+        },
+
+        decode(turns) {
+            return turns.flatMap(decodeTurn) as unknown as TNative[]
+        },
+
+        ...piFamilyCodecOps,
+    }
+}
+
+/** Model-typed codec instance for host-agnostic callers and tests. */
+export const piCodec = createPiFamilyCodec<PiMessage>()
+
+/** The tool convention shared by both hosts: name, input, and error text. */
+export const toolConvention = (item: Extract<Item, { kind: "tool" }>) => {
+    const pair = pairOf(item)
+    return {
+        name: pair.call.name,
+        input: pair.call.arguments,
+        error: pair.result?.isError ? contentText(pair.result.content) : undefined,
+    }
+}
+
+/**
+ * Stage order shared by both pi-family hosts: prune what the model no longer
+ * needs (superseded reads, stale failed inputs, old tool traffic), then old
+ * thinking, then whole assistant runs.
+ */
+export const LADDER_STAGES = [
+    supersedeReadsStage,
+    purgeErrorInputsStage,
+    toolsOldStage,
+    reasoningStage,
+    toolsRemainingStage,
+    assistantRunsStage,
+]
+
 export const piSpec: LadderSpec = {
-    codec: piCodec,
+    codec: piFamilyCodecOps,
     // pi has no skill parts and its todo state lives in session details,
     // outside messages — nothing in-band to select or preserve.
-    conventions: {
-        tool: (item) => {
-            const pair = pairOf(item)
-            return {
-                name: pair.call.name,
-                input: pair.call.arguments,
-                error: pair.result?.isError ? contentText(pair.result.content) : undefined,
-            }
-        },
-    },
-    stages: [
-        supersedeReadsStage,
-        purgeErrorInputsStage,
-        toolsOldStage,
-        reasoningStage,
-        toolsRemainingStage,
-        assistantRunsStage,
-    ],
+    conventions: { tool: toolConvention },
+    stages: LADDER_STAGES,
 }
 
 // A Turn is one user message, or one assistant message plus the non-user
@@ -296,7 +332,7 @@ function isWholeMessage(handle: unknown): handle is PiMessage {
     return typeof handle === "object" && handle !== null && "role" in handle
 }
 
-function pairOf(item: Extract<Item, { kind: "tool" }>): ToolPair {
+export function pairOf(item: Extract<Item, { kind: "tool" }>): ToolPair {
     return item.handle as ToolPair
 }
 
@@ -357,9 +393,10 @@ function charsOfUserItems(items: Item[]): number {
         if (item.kind === "synthetic") chars += item.text.length
         else if (item.kind === "text") chars += textOf(item.handle).length
         else if (item.kind === "opaque" && !isWholeMessage(item.handle)) {
-            chars += (item.handle as ImageContent).type === "image"
-                ? ESTIMATED_IMAGE_CHARS
-                : jsonLength(item.handle)
+            chars +=
+                (item.handle as ImageContent).type === "image"
+                    ? ESTIMATED_IMAGE_CHARS
+                    : jsonLength(item.handle)
         }
     }
     return chars
@@ -371,16 +408,22 @@ function charsOfToolPair(pair: ToolPair): number {
     return chars
 }
 
-// pi's convertToLlm mapping for the non-user, non-assistant messages that
-// reach the model as user-role text.
+// The convertToLlm mapping for the non-user, non-assistant messages that reach
+// the model as user-role text.
 function charsOfContextMessage(message: PiMessage): number {
     switch (message.role) {
         case "toolResult":
             return charsOfUserContent(message.content)
         case "bashExecution":
             return message.excludeFromContext ? 0 : bashExecutionText(message).length
+        case "pythonExecution":
+            return message.excludeFromContext ? 0 : pythonExecutionText(message).length
+        case "developer":
         case "custom":
+        case "hookMessage":
             return charsOfUserContent(message.content)
+        case "fileMention":
+            return fileMentionChars(message)
         case "branchSummary":
             return (
                 BRANCH_SUMMARY_PREFIX.length + message.summary.length + BRANCH_SUMMARY_SUFFIX.length
@@ -392,7 +435,8 @@ function charsOfContextMessage(message: PiMessage): number {
                 COMPACTION_SUMMARY_SUFFIX.length
             )
         default:
-            // Unrecognized roles never reach the model (convertToLlm drops them).
+            // Every role the hosts convert is handled above; the shared model's
+            // role guard is what keeps that true.
             return 0
     }
 }
@@ -403,6 +447,21 @@ function charsOfUserContent(content: UserContent): number {
         (sum, block) => sum + (block.type === "text" ? block.text.length : ESTIMATED_IMAGE_CHARS),
         0,
     )
+}
+
+/**
+ * Mirrors Oh My Pi's `fileMention` conversion: every mentioned file is wrapped
+ * in a `<file path="…">` block, with image-bearing files additionally
+ * contributing an image block. Upstream pi has no mention channel, so this is
+ * never reached there.
+ */
+function fileMentionChars(message: Extract<PiMessage, { role: "fileMention" }>): number {
+    let chars = 0
+    for (const file of message.files) {
+        chars += `<file path="${file.path}">\n${file.content}\n</file>`.length
+        if (file.image) chars += ESTIMATED_IMAGE_CHARS
+    }
+    return chars
 }
 
 // Mirrors pi's bashExecutionToText (pi core/messages.ts) so bash history
@@ -416,6 +475,19 @@ function bashExecutionText(bash: Extract<PiMessage, { role: "bashExecution" }>):
     }
     if (bash.truncated && bash.fullOutputPath)
         text += `\n\n[Output truncated. Full output: ${bash.fullOutputPath}]`
+    return text
+}
+
+// Mirrors pythonExecutionToText (Oh My Pi session/messages.ts) so `$$` history
+// prices as the user-role text the host actually sends. Upstream pi has no
+// Python channel, so this branch is simply never reached there.
+function pythonExecutionText(python: Extract<PiMessage, { role: "pythonExecution" }>): string {
+    let text = `Ran Python:\n\`\`\`python\n${python.code}\n\`\`\`\n`
+    text += python.output ? `Output:\n\`\`\`\n${python.output}\n\`\`\`` : "(no output)"
+    if (python.cancelled) text += "\n\n(cancelled)"
+    else if (python.exitCode !== null && python.exitCode !== undefined && python.exitCode !== 0) {
+        text += `\n\nExited with code ${python.exitCode}`
+    }
     return text
 }
 
@@ -441,6 +513,7 @@ function formatOpaque(handle: unknown): string {
     const message = handle
     switch (message.role) {
         case "user":
+        case "developer":
             return typeof message.content === "string"
                 ? message.content
                 : contentText(message.content)
@@ -448,8 +521,18 @@ function formatOpaque(handle: unknown): string {
             return `[orphaned tool result:${message.toolName}] callId=${message.toolCallId}\n${truncate(contentText(message.content), 20_000)}`
         case "bashExecution":
             return `[bash]\n${bashExecutionText(message)}`
+        case "pythonExecution":
+            return `[python]\n${pythonExecutionText(message)}`
         case "custom":
-            return `[custom:${message.customType}]\n${typeof message.content === "string" ? message.content : contentText(message.content)}`
+        case "hookMessage":
+            return `[${message.role === "custom" ? "custom" : "hook"}:${message.customType}]\n${typeof message.content === "string" ? message.content : contentText(message.content)}`
+        case "fileMention":
+            return message.files
+                .map(
+                    (file) =>
+                        `[file mention: ${file.path}]\n${truncate(file.content, 20_000)}${file.image ? `\n[image ${file.image.mimeType}]` : ""}`,
+                )
+                .join("\n\n")
         case "branchSummary":
             return `[branch summary]\n${message.summary}`
         case "compactionSummary":
@@ -459,7 +542,7 @@ function formatOpaque(handle: unknown): string {
     }
 }
 
-function contentText(content: (TextContent | ImageContent)[]): string {
+export function contentText(content: (TextContent | ImageContent)[]): string {
     return content
         .map((block) => (block.type === "text" ? block.text : `[image ${block.mimeType}]`))
         .filter(Boolean)
