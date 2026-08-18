@@ -1,12 +1,14 @@
 {
     "$schema": "https://json.schemastore.org/package.json",
     "name": "@better-compact/pi",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "type": "module",
-    "description": "pi extension that improves long-session context with boundary-time pruning",
+    "description": "pi and Oh My Pi extension that improves long-session context with boundary-time pruning",
     "keywords": [
         "pi-package",
         "pi",
+        "oh-my-pi",
+        "omp",
         "context",
         "pruning",
         "tokens"
@@ -16,9 +18,15 @@
             "./dist/extension.js"
         ]
     },
+    "omp": {
+        "extensions": [
+            "./dist/omp.js"
+        ]
+    },
     "main": "./dist/extension.js",
     "exports": {
-        ".": "./dist/extension.js"
+        ".": "./dist/extension.js",
+        "./omp": "./dist/omp.js"
     },
     "files": [
         "dist/"
@@ -38,13 +46,40 @@
         "clean": "rm -rf dist",
         "build": "pnpm run clean && tsup",
         "typecheck": "tsc --noEmit",
-        "test": "node --import tsx --test tests/*.test.ts"
+        "test": "node --import tsx --test tests/*.test.ts",
+        "smoke:omp": "bun run scripts/smoke-omp.ts"
     },
     "peerDependencies": {
         "@earendil-works/pi-agent-core": "*",
         "@earendil-works/pi-ai": "*",
         "@earendil-works/pi-coding-agent": "*",
-        "@earendil-works/pi-tui": "*"
+        "@earendil-works/pi-tui": "*",
+        "@oh-my-pi/pi-ai": "*",
+        "@oh-my-pi/pi-coding-agent": "*",
+        "@oh-my-pi/pi-tui": "*"
+    },
+    "peerDependenciesMeta": {
+        "@earendil-works/pi-agent-core": {
+            "optional": true
+        },
+        "@earendil-works/pi-ai": {
+            "optional": true
+        },
+        "@earendil-works/pi-coding-agent": {
+            "optional": true
+        },
+        "@earendil-works/pi-tui": {
+            "optional": true
+        },
+        "@oh-my-pi/pi-ai": {
+            "optional": true
+        },
+        "@oh-my-pi/pi-coding-agent": {
+            "optional": true
+        },
+        "@oh-my-pi/pi-tui": {
+            "optional": true
+        }
     },
     "devDependencies": {
         "@better-compact/core": "workspace:*",
@@ -52,6 +87,9 @@
         "@earendil-works/pi-ai": "^0.80.6",
         "@earendil-works/pi-coding-agent": "^0.80.6",
         "@earendil-works/pi-tui": "^0.80.6",
+        "@oh-my-pi/pi-ai": "^17.3.4",
+        "@oh-my-pi/pi-coding-agent": "^17.3.4",
+        "@oh-my-pi/pi-tui": "^17.3.4",
         "@types/node": "^25.5.0",
         "tsup": "^8.5.1",
         "tsx": "^4.21.0",
