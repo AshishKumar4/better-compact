@@ -27,16 +27,33 @@ pi, as a package:
 pi install npm:@better-compact/pi
 ```
 
-Oh My Pi, as a plugin:
+Oh My Pi, as a plugin — its plugin manager takes a bare npm spec, so no
+marketplace entry is needed:
 
 ```bash
 omp plugin install @better-compact/pi
+omp plugin list          # ● @better-compact/pi@0.3.0
+omp plugin doctor        # ✔ plugin:@better-compact/pi
 ```
 
-Or as a manual drop-in for either host: build with `pnpm build`, then place the artifact where the
-host looks for extensions — `~/.pi/agent/extensions/` for pi, or a directory under
-`~/.omp/agent/extensions/` containing `omp.js` and a `package.json` declaring
-`"omp": { "extensions": ["./omp.js"] }` for Oh My Pi.
+For local development, point it at a built checkout. Oh My Pi symlinks the
+directory, so later `pnpm build` runs are picked up without reinstalling:
+
+```bash
+pnpm build
+omp plugin install ./packages/pi
+```
+
+There is also a manual drop-in for either host: `~/.pi/agent/extensions/extension.js`
+for pi, or a directory under `~/.omp/agent/extensions/` holding `omp.js` beside a
+`package.json` declaring `"omp": { "extensions": ["./omp.js"] }`.
+
+**Install it one way only.** Both hosts discover extensions from several roots at
+once, so a plugin *and* a drop-in means two independent instances in one session —
+and `emitContext` chains every registered `context` handler, so the second would
+re-run the ladder over already-pruned messages while keeping a competing plan. The
+adapter detects this and leaves the duplicate inert with a warning, but the fix is
+to remove one of them.
 
 ## How it works
 
@@ -143,6 +160,30 @@ exposes no project-trust query to extensions, so only the global file is read th
 would be executable policy with nothing vouching for the working tree.
 
 With no file present, the light preset remains the default.
+
+## How the two adapters share code
+
+Almost all of it. Only host wiring differs:
+
+```
+src/
+  runtime.ts      the adapter: config, plan store, ladder pass, summaries,
+                  session ownership, widget state          <- shared
+  codec.ts        one codec, typed per host by a factory   <- shared
+  messages.ts     structural message model + role guard    <- shared
+  config.ts       better-compact.json load/merge/write     <- shared
+  plan-store.ts   branch-local plan snapshots             <- shared
+  ownership.ts    one instance per session                <- shared
+  tui/            widget, report, settings panel          <- shared
+  extension.ts    pi: events, commands, trust, rendering
+  omp.ts          Oh My Pi: events, commands, compaction override
+  omp/            Oh My Pi codec conventions, summarizer, compaction policy
+```
+
+`runtime.ts` is generic over the host's own context and message types, so nothing
+is flattened to `unknown` and neither entry casts at the boundary. The host
+supplies accessors (session id, session dir, context window, config paths,
+summarizer, UI) and the runtime owns the policy.
 
 ## Verifying a change
 
