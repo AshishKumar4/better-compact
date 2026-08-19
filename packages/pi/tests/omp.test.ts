@@ -189,7 +189,6 @@ test("the durable context carries the pruned prefix and its transcript reference
     assert.ok(summary.length < rawPrefix, "the durable context must be smaller than raw history")
 })
 
-
 test("the todo convention restates the latest plan from the tool result details", () => {
     const messages: PiMessage[] = [
         userMessage("plan it", 1),
