@@ -97,6 +97,9 @@ while a plan is active. Details: [packages/pi/README.md](packages/pi/README.md).
 omp plugin install @better-compact/pi
 ```
 
+Requires `@better-compact/pi` 0.3.0 or newer — Oh My Pi support is what added its
+`omp` entrypoint.
+
 The same package carries an Oh My Pi entry, and this is the one adapter where Better Compact _owns_
 compaction rather than coexisting with it. Every run the host decides on — manual, the pre-prompt and
 mid-turn thresholds, idle maintenance, and overflow recovery — is answered by the ladder, and what
