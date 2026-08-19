@@ -1,20 +1,5 @@
 import { join } from "node:path"
-import {
-    buildPlan,
-    COMPACTION_PRESETS,
-    createEngine,
-    createSummaryScheduler,
-    resolveCompactionProfile,
-    toPlanSnapshot,
-    writeTranscript,
-    type BoundaryContextPlan,
-    type BuildPlanInputs,
-    type CompactionConfig,
-    type EnginePorts,
-    type Logger,
-    type PlanSnapshot,
-    type Turn,
-} from "@better-compact/core"
+import type { BuildPlanInputs, CompactionConfig, Logger } from "@better-compact/core"
 import {
     buildSessionContext,
     getAgentDir,
@@ -22,55 +7,42 @@ import {
     settings as ompSettings,
     type ExtensionAPI,
     type ExtensionContext,
-    type SessionEntry,
 } from "@oh-my-pi/pi-coding-agent"
 import { SettingsList } from "@oh-my-pi/pi-tui"
-import {
-    commandPreset,
-    CONFIG_FILE,
-    errorText,
-    loadCompactionConfig,
-    mergeCompactionConfig,
-    readConfigObject,
-    writeConfigObject,
-} from "./config"
+import { commandPreset, CONFIG_FILE, errorText } from "./config"
 import { ompCodec, ompSpec } from "./omp/codec"
-import {
-    decideCompaction,
-    formatDurableCompaction,
-    type CompactionTrigger,
-} from "./omp/compaction"
+import { decideCompaction, formatDurableCompaction, type CompactionTrigger } from "./omp/compaction"
 import type { OmpAgentMessage } from "./omp/host"
 import { createOmpSummarizer } from "./omp/summarizer"
-import { createPlanStore } from "./plan-store"
-import { createTranscriptStore } from "./transcripts"
-import type { HostSettingsUi } from "./tui/host"
+import { createRuntime, type RuntimeHost } from "./runtime"
 import { formatTokens } from "./tui/format"
+import type { HostSettingsUi } from "./tui/host"
 import { ReportComponent, reportFromSnapshot } from "./tui/report"
 import { createSettingsComponent } from "./tui/settings"
-import { WidgetComponent, type WidgetState } from "./tui/widget"
+import { WidgetComponent } from "./tui/widget"
 
 /**
  * Oh My Pi runs extension handlers under a 30s timeout
  * (`EXTENSION_HANDLER_TIMEOUT_MS`). A compaction handler that overruns it is
  * discarded and the native summarizer runs instead, so side-model summaries get
  * a deadline with room left for the transcript write and plan rebuild. Missing
- * the deadline is not a failure: the plan already carries core's deterministic
- * prefix summary, so the durable compaction just lands without LLM polish.
+ * the deadline is not a failure: the ladder's deterministic output still lands,
+ * just without LLM polish on the collapsed runs.
  */
 const COMPACT_SUMMARY_DEADLINE_MS = 20_000
 
 /**
  * Strategies under which Better Compact does not reliably own compaction.
  *
- * `handoff` and `shake` each run their own path first and only fall back into
- * the context-full body that consults this hook — handoff when it produces no
+ * `handoff` and `shake` each run their own path first and only fall back to the
+ * context-full body that consults this hook — handoff when it produces no
  * document, shake when it finds nothing eligible to drop — so ownership is
  * intermittent rather than absent. `off` disables maintenance entirely and never
  * reaches the hook at all.
  */
 const UNRELIABLE_STRATEGIES: Record<string, string> = {
-    handoff: "hands the session off first and only falls back to this hook when it produces no document",
+    handoff:
+        "hands the session off first and only falls back to this hook when it produces no document",
     shake: "drops content inline first and only falls back to this hook when it finds nothing to drop",
     off: "disables context maintenance altogether, so the hook never runs",
 }
@@ -87,23 +59,51 @@ const settingsUi: HostSettingsUi<SettingsList> = {
         new SettingsList(items, visibleRows, getSettingsListTheme(), onChange, onDone),
 }
 
+/**
+ * The Oh My Pi half of the adapter: how to reach this host's session, config,
+ * usage and credentials. Everything policy-shaped lives in the shared runtime.
+ *
+ * `appendEntry` is bound per extension instance, so the host is built per
+ * factory invocation rather than shared at module scope.
+ */
+function createOmpHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, OmpAgentMessage> {
+    return {
+        codec: ompCodec,
+        spec: ompSpec,
+        logger,
+        ui: (ctx) => ({
+            notify: (message, level) => ctx.ui.notify(message, level),
+            setStatus: (text) => ctx.ui.setStatus("better-compact", text),
+            showWidget: (state) =>
+                ctx.hasUI
+                    ? ctx.ui.setWidget(
+                          "better-compact",
+                          state ? (_tui, theme) => new WidgetComponent(theme, state) : undefined,
+                          { placement: "aboveEditor" },
+                      )
+                    : undefined,
+        }),
+        sessionId: (ctx) => ctx.sessionManager.getSessionId(),
+        sessionDir: (ctx) => ctx.sessionManager.getSessionDir(),
+        branch: (ctx) => ctx.sessionManager,
+        // `buildSessionContext` owns compaction replay, `/clear` boundaries,
+        // retry-recovery filtering and custom-message normalization, so the ladder
+        // plans against the same history the host would send.
+        durableMessages: (ctx) => buildSessionContext(ctx.sessionManager.getBranch()).messages,
+        contextWindow: (ctx) => ctx.model?.contextWindow ?? ctx.getContextUsage()?.contextWindow,
+        providerTokens: (ctx) => ctx.getContextUsage()?.tokens,
+        // Oh My Pi exposes no extension-facing project-trust query, so only the
+        // global file is read: a project file would be executable policy with
+        // nothing vouching for the working tree.
+        configPaths: () => ({ global: join(getAgentDir(), CONFIG_FILE), project: null }),
+        summarizer: (ctx, signal) => createOmpSummarizer(ctx, logger, signal),
+        appendEntry: (customType, data) => pi.appendEntry(customType, data),
+    }
+}
+
 export default function betterCompactOmp(pi: ExtensionAPI) {
-    const plans = createPlanStore((customType, data) => pi.appendEntry(customType, data))
-    const summaryScheduler = createSummaryScheduler(logger)
-    let config = mergeCompactionConfig()
-    let profile = COMPACTION_PRESETS.light
-    let widget: WidgetState = { planActive: false }
+    const runtime = createRuntime(createOmpHost(pi))
     let strategyWarned = false
-    /**
-     * Bumped by every session transition (start, switch, branch, tree). Detached
-     * summary work captures the value it started under and drops its result when
-     * it no longer matches, so a plan can never be written onto a branch or
-     * session other than the one it was planned for. Session id alone is not
-     * enough: same-file tree navigation keeps the id and changes the leaf.
-     */
-    let generation = 0
-    /** Single-flight: one background summary upgrade at a time per session. */
-    let summarizing = false
     /**
      * The reason Oh My Pi is compacting. `auto_compaction_start` fires before
      * `session_before_compact`; a compact event with nothing recorded here is
@@ -111,71 +111,17 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
      */
     let pendingTrigger: CompactionTrigger | undefined
 
-    // The widget is docked above the editor, so it only earns its line when
-    // there is something to say: an active plan or summaries still running.
-    const updateWidget = (ctx: ExtensionContext, next: Partial<WidgetState>): void => {
-        widget = { ...widget, ...next }
-        if (!ctx.hasUI) return
-        const worthShowing = widget.planActive || (widget.summarizing?.total ?? 0) > 0
-        ctx.ui.setWidget(
-            "better-compact",
-            worthShowing ? (_tui, theme) => new WidgetComponent(theme, widget) : undefined,
-            { placement: "aboveEditor" },
-        )
-    }
-
-    const enginePorts = (ctx: ExtensionContext): EnginePorts => ({
-        transcripts: createTranscriptStore(ctx.sessionManager.getSessionDir()),
-        plans,
-        logger,
-    })
-
-    const planInputs = (ctx: ExtensionContext, contextLimit: number): BuildPlanInputs => ({
-        contextLimit,
-        triggerRatio: profile.triggerPercent / 100,
-        targetRatio: profile.targetPercent / 100,
-        recentToolResultBudgetTokens: profile.recentToolTokens,
-        sessionKey: ctx.sessionManager.getSessionId(),
-        citablePath: createTranscriptStore(ctx.sessionManager.getSessionDir()).citablePath,
-    })
-
     /**
-     * Rebuild per-session state. Oh My Pi keeps one extension runtime across
-     * new/resume/fork/handoff (`session_switch`), branch operations
-     * (`session_branch`) and same-file tree navigation (`session_tree`), so every
-     * one of those has to land here or the adapter keeps serving the previous
-     * branch's plan.
-     */
-    const rehydrate = async (ctx: ExtensionContext): Promise<void> => {
-        generation++
-        widget = { planActive: false }
-        if (ctx.hasUI) {
-            ctx.ui.setWidget("better-compact", undefined, { placement: "aboveEditor" })
-            ctx.ui.setStatus("better-compact", undefined)
-        }
-        pendingTrigger = undefined
-        plans.restore(ctx.sessionManager)
-        const messages = durableMessages(ctx.sessionManager.getBranch())
-        if (messages.length > 0) {
-            plans.adopt(ctx.sessionManager.getSessionId(), ompCodec.encode(messages))
-        }
-        config = await loadCompactionConfig(logger, join(getAgentDir(), CONFIG_FILE), null)
-        profile = resolveCompactionProfile({ compaction: config })
-        warnUnreachedStrategy(ctx)
-    }
-
-    /**
-     * Oh My Pi routes `handoff` and `shake` to their own inline paths and `off`
-     * disables maintenance, so those strategies never consult the compaction
-     * hook and Better Compact would silently not own automatic compaction.
-     * Warn once rather than mutating the user's configuration.
+     * Oh My Pi routes `handoff` and `shake` to their own paths first and `off`
+     * disables maintenance, so under those Better Compact does not reliably own
+     * compaction. Warn once rather than mutating the user's configuration.
      *
      * Reading the setting is best-effort on purpose: `settings.get` throws
      * outright when the host has not initialized `Settings` yet (embedded and
      * test hosts do not), and a diagnostic must never be the reason session
      * rehydration fails.
      */
-    const warnUnreachedStrategy = (ctx: ExtensionContext): void => {
+    const warnUnreliableStrategy = (ctx: ExtensionContext): void => {
         if (strategyWarned) return
         let strategy: string | undefined
         try {
@@ -192,14 +138,24 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         )
     }
 
+    /**
+     * Oh My Pi keeps one extension runtime across new/resume/fork/handoff
+     * (`session_switch`), branch operations (`session_branch`) and same-file tree
+     * navigation (`session_tree`), so every one of those has to rehydrate or the
+     * adapter keeps serving the previous branch's plan. A committed compaction
+     * rewrote the branch, so it rehydrates too.
+     */
+    const rehydrate = async (ctx: ExtensionContext): Promise<void> => {
+        if (!runtime.owns(ctx)) return
+        pendingTrigger = undefined
+        await runtime.rehydrate(ctx)
+        warnUnreliableStrategy(ctx)
+    }
+
     pi.on("session_start", (_event, ctx) => rehydrate(ctx))
     pi.on("session_switch", (_event, ctx) => rehydrate(ctx))
     pi.on("session_branch", (_event, ctx) => rehydrate(ctx))
     pi.on("session_tree", (_event, ctx) => rehydrate(ctx))
-
-    // A committed compaction rewrote the branch, so any plan built against the
-    // old prefix is stale. Rehydrating re-reads the branch and re-adopts only a
-    // snapshot that still matches.
     pi.on("session_compact", (_event, ctx) => rehydrate(ctx))
 
     pi.on("auto_compaction_start", (event) => {
@@ -212,36 +168,9 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
 
     pi.on("context", async (event, ctx) => {
         try {
-            if (!config.automatic) return
-            const usage = ctx.getContextUsage()
-            const contextLimit = ctx.model?.contextWindow ?? usage?.contextWindow
-            if (!contextLimit || contextLimit <= 0) return
-            const sessionKey = ctx.sessionManager.getSessionId()
-            const turns = ompCodec.encode(event.messages)
-            plans.adopt(sessionKey, turns)
-            const result = await createEngine(ompSpec, enginePorts(ctx)).process({
-                sessionKey,
-                turns,
-                contextLimit,
-                triggerRatio: profile.triggerPercent / 100,
-                targetRatio: profile.targetPercent / 100,
-                recentToolResultBudgetTokens: profile.recentToolTokens,
-                providerReportedTokens: usage?.tokens,
-            })
-            if (result.outcome === "unchanged") return
-            if (result.outcome === "planned" && result.plan.summaryJobs.length > 0) {
-                void upgradePlanWithSummaries(ctx, turns, contextLimit, result.plan)
-            }
-            const plan = result.outcome === "planned" ? result.plan : undefined
-            updateWidget(ctx, {
-                planActive: true,
-                contextLimit,
-                contextTokens: plan?.afterPruneTokens ?? usage?.tokens,
-                prunedTokens: plan
-                    ? Math.max(0, plan.beforeTokens - plan.afterPruneTokens)
-                    : widget.prunedTokens,
-            })
-            return { messages: ompCodec.decode(result.turns, event.messages) }
+            if (!runtime.owns(ctx)) return
+            const result = await runtime.transform(ctx, event.messages)
+            return result ? { messages: result.messages } : undefined
         } catch (error) {
             // A failed prune must never break the request; it goes out unpruned.
             logger.error("Better Compact context transform failed", { error: errorText(error) })
@@ -251,41 +180,29 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
     /**
      * Better Compact answers every compaction Oh My Pi decides to run — manual
      * `/compact`, the pre-prompt and mid-turn thresholds, idle maintenance, and
-     * overflow recovery.
+     * overflow recovery — and the native summarizer never runs.
      *
-     * Two answers are possible, and which one applies is the prune-before-
-     * summarize decision made by {@link decideCompaction}:
+     * The host's durable shape is one summary string plus a contiguous tail, so
+     * the ladder's compacted prefix is serialized into that slot: user turns as
+     * written, dropped tool calls as one-line stubs, collapsed runs carrying the
+     * summaries paid for here, and a pointer to the raw transcript. The host then
+     * persists it, rebuilds context, rebases accounting and resets dependent
+     * state exactly as it would for its own summarizer.
      *
-     * - The ladder reached its target by pruning alone. Nothing needs to be
-     *   summarized yet, so the run is declined and the persisted plan keeps
-     *   shrinking each outgoing request instead.
-     * - Pruning was exhausted and the prefix has to go. The ladder's own output
-     *   is already one summary turn plus a raw tail, which is exactly the shape
-     *   of an Oh My Pi `CompactionResult`, so it is returned as one and the host
-     *   persists it, rebuilds context, rebases accounting and resets dependent
-     *   state as it would for its own summarizer.
-     *
-     * Anything unexpected returns nothing, which hands the run back to the
-     * native summarizer rather than leaving the session uncompacted.
+     * Returning nothing hands the run back to the native summarizer rather than
+     * leaving the session uncompacted.
      */
     pi.on("session_before_compact", async (event, ctx) => {
         const trigger = pendingTrigger ?? "manual"
         try {
+            if (!runtime.owns(ctx)) return
             const contextLimit = ctx.model?.contextWindow
             if (!contextLimit || contextLimit <= 0) return
-            const messages = durableMessages(event.branchEntries)
+            const messages = buildSessionContext(event.branchEntries).messages
             if (messages.length === 0) return
 
-            const sessionKey = ctx.sessionManager.getSessionId()
             const turns = ompCodec.encode(messages)
-            const transcripts = createTranscriptStore(ctx.sessionManager.getSessionDir())
-            const priorPlan = await plans.load(sessionKey)
-            const inputs: BuildPlanInputs = {
-                ...planInputs(ctx, contextLimit),
-                force: true,
-                priorPlan: priorPlan ?? undefined,
-            }
-            const plan = buildPlan(turns, inputs, ompSpec)
+            const plan = await runtime.forcePlan(ctx, messages, contextLimit)
             const decide = (candidate: typeof plan) =>
                 decideCompaction({
                     trigger,
@@ -306,8 +223,16 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
                 return
             }
 
-            await writeTranscript(plan, { transcripts, logger, codec: ompCodec })
-            const finalPlan = await summarizeWithinDeadline(ctx, turns, inputs, plan, event.signal)
+            const inputs: BuildPlanInputs = {
+                ...runtime.planInputs(ctx, contextLimit),
+                force: true,
+            }
+            const deadline = AbortSignal.any([
+                event.signal,
+                AbortSignal.timeout(COMPACT_SUMMARY_DEADLINE_MS),
+            ])
+            const finalPlan = await runtime.summarizeNow(ctx, turns, inputs, plan, deadline)
+
             const decision = decide(finalPlan)
             if (decision.kind === "decline") {
                 logger.warn("Better Compact declined this compaction after summarizing", {
@@ -324,12 +249,7 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
             }
 
             const reclaimed = Math.max(0, finalPlan.beforeTokens - finalPlan.afterPruneTokens)
-            updateWidget(ctx, {
-                planActive: false,
-                contextLimit,
-                contextTokens: finalPlan.afterPruneTokens,
-                prunedTokens: undefined,
-            })
+            runtime.clearWidget(ctx)
             return {
                 compaction: {
                     summary,
@@ -376,13 +296,24 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
     pi.registerCommand("better-compact-report", {
         description: "Show what the active Better Compact plan is keeping out of context",
         handler: async (_args, ctx) => {
-            const sessionKey = ctx.sessionManager.getSessionId()
-            const snapshot = await plans.load(sessionKey)
+            const snapshot = await runtime.plans.load(ctx.sessionManager.getSessionId())
             if (!snapshot) {
                 ctx.ui.notify("Better Compact: no active plan for this session.", "info")
                 return
             }
-            await showReport(ctx, snapshot)
+            const kept = Math.max(0, snapshot.beforeTokens - snapshot.afterPruneTokens)
+            if (!ctx.hasUI || ctx.mode !== "tui") {
+                ctx.ui.notify(
+                    `Better Compact: keeping ${formatTokens(kept)} tokens out of each request (${formatTokens(snapshot.afterPruneTokens)}/${formatTokens(snapshot.contextLimit)}).`,
+                    "info",
+                )
+                return
+            }
+            await ctx.ui.custom<null>(
+                (_tui, theme, _keybindings, done) =>
+                    new ReportComponent(theme, reportFromSnapshot(snapshot), () => done(null)),
+                { overlay: true },
+            )
         },
     })
 
@@ -398,11 +329,11 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
             }
             const result = await ctx.ui.custom<{ changed: boolean; config: CompactionConfig }>(
                 (_tui, _theme, _keybindings, done) =>
-                    createSettingsComponent(settingsUi, config, done),
+                    createSettingsComponent(settingsUi, runtime.config, done),
                 { overlay: true },
             )
             if (!result?.changed) return
-            await persistConfig(ctx, {
+            await runtime.saveConfig(ctx, {
                 automatic: result.config.automatic,
                 preset: result.config.preset,
                 summaryEffort: result.config.summaryEffort,
@@ -418,143 +349,7 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
                 ctx.ui.notify("Usage: /better-compact-preset <light|moderate|max>", "warning")
                 return
             }
-            await persistConfig(ctx, { preset })
+            await runtime.saveConfig(ctx, { preset }, `Better Compact preset set to ${preset}.`)
         },
     })
-
-    /**
-     * Oh My Pi has no extension-facing project-trust query, so only the global
-     * config file is read and written. A project file would be executable
-     * policy with nothing vouching for the working tree.
-     */
-    async function persistConfig(
-        ctx: ExtensionContext,
-        patch: Partial<CompactionConfig>,
-    ): Promise<void> {
-        const path = join(getAgentDir(), CONFIG_FILE)
-        try {
-            const current = (await readConfigObject(path)) ?? {}
-            await writeConfigObject(path, { ...current, ...patch })
-            config = mergeCompactionConfig(config, patch)
-            profile = resolveCompactionProfile({ compaction: config })
-            ctx.ui.notify("Better Compact settings saved.", "info")
-        } catch (error) {
-            logger.warn("Better Compact settings update failed", { path, error: errorText(error) })
-            ctx.ui.notify(`Better Compact: could not write ${path}.`, "warning")
-        }
-    }
-
-    // Terminal overlays exist only in TUI mode; RPC and headless runs fall back
-    // to a notification.
-    async function showReport(ctx: ExtensionContext, snapshot: PlanSnapshot): Promise<void> {
-        const kept = Math.max(0, snapshot.beforeTokens - snapshot.afterPruneTokens)
-        if (!ctx.hasUI || ctx.mode !== "tui") {
-            ctx.ui.notify(
-                `Better Compact: keeping ${formatTokens(kept)} tokens out of each request (${formatTokens(snapshot.afterPruneTokens)}/${formatTokens(snapshot.contextLimit)}).`,
-                "info",
-            )
-            return
-        }
-        await ctx.ui.custom<null>(
-            (_tui, theme, _keybindings, done) =>
-                new ReportComponent(theme, reportFromSnapshot(snapshot), () => done(null)),
-            { overlay: true },
-        )
-    }
-
-    /**
-     * Run the plan's summary jobs inside the compaction hook, bounded so the
-     * host's handler timeout is never the thing that ends them. A plan rebuilt
-     * with accepted summaries replaces the original; on timeout or failure the
-     * original stands, carrying core's deterministic prefix summary.
-     */
-    async function summarizeWithinDeadline(
-        ctx: ExtensionContext,
-        turns: Turn[],
-        inputs: BuildPlanInputs,
-        plan: BoundaryContextPlan,
-        signal: AbortSignal,
-    ): Promise<BoundaryContextPlan> {
-        if (plan.summaryJobs.length === 0) return plan
-        const deadline = AbortSignal.any([signal, AbortSignal.timeout(COMPACT_SUMMARY_DEADLINE_MS)])
-        try {
-            const summaries = await summaryScheduler.summarize({
-                sessionKey: plan.sessionId,
-                jobs: plan.summaryJobs,
-                summarizer: createOmpSummarizer(ctx, logger, deadline),
-                concurrency: profile.summarizerConcurrency,
-            })
-            if (Object.keys(summaries).length === 0) return plan
-            return (
-                buildPlan(
-                    turns,
-                    {
-                        ...inputs,
-                        // Keep the boundary and everything already pruned, but do
-                        // not carry the prior digest forward: the rebuild exists
-                        // to fold in the summaries just fetched.
-                        priorPlan: { ...toPlanSnapshot(plan), prefixSummary: undefined },
-                        assistantSummaries: summaries,
-                    },
-                    ompSpec,
-                ) ?? plan
-            )
-        } catch (error) {
-            logger.warn("Better Compact compaction summaries incomplete", {
-                error: errorText(error),
-            })
-            return plan
-        }
-    }
-
-    // Summary jobs never block a request: they land in the plan in the
-    // background and upgrade the replayed prefix from the next request.
-    async function upgradePlanWithSummaries(
-        ctx: ExtensionContext,
-        turns: Turn[],
-        contextLimit: number,
-        plan: BoundaryContextPlan,
-    ): Promise<void> {
-        const startedAt = generation
-        if (summarizing) return
-        summarizing = true
-        try {
-            const summaries = await summaryScheduler.summarize({
-                sessionKey: plan.sessionId,
-                jobs: plan.summaryJobs,
-                summarizer: createOmpSummarizer(ctx, logger),
-                concurrency: profile.summarizerConcurrency,
-            })
-            if (Object.keys(summaries).length === 0) return
-            // The session moved (switch, branch, tree, or a committed
-            // compaction) while these ran; their plan no longer describes the
-            // live branch, so it must not be written.
-            if (generation !== startedAt) return
-            const upgraded = buildPlan(
-                turns,
-                {
-                    ...planInputs(ctx, contextLimit),
-                    force: true,
-                    priorPlan: toPlanSnapshot(plan),
-                    assistantSummaries: { ...plan.assistantSummaries, ...summaries },
-                },
-                ompSpec,
-            )
-            if (upgraded) await plans.save(plan.sessionId, toPlanSnapshot(upgraded))
-        } catch (error) {
-            logger.warn("Better Compact summary upgrade failed", { error: errorText(error) })
-        } finally {
-            summarizing = false
-        }
-    }
-}
-
-/**
- * The durable context for a branch, exactly as Oh My Pi rebuilds it for the
- * model: `buildSessionContext` owns compaction replay, `/clear` boundaries,
- * retry-recovery filtering and custom-message normalization, so the ladder
- * plans against the same history the host would send.
- */
-function durableMessages(entries: SessionEntry[]): OmpAgentMessage[] {
-    return buildSessionContext(entries).messages
 }
