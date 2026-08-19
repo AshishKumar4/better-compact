@@ -21,14 +21,14 @@ Oh My Pi entry imports `@oh-my-pi/*`. Oh My Pi's legacy-pi compatibility shim wo
 
 ## Install
 
-pi, as a package:
+### Oh My Pi
 
-```bash
-pi install npm:@better-compact/pi
-```
+**Requires 0.3.0 or newer.** Oh My Pi support is what added the `omp` entry;
+0.2.0 and earlier declare only the pi one, and Oh My Pi will reject the install
+with `Export named 'sessionEntryToContextMessages' not found` because the pi
+artifact cannot load there.
 
-Oh My Pi, as a plugin — its plugin manager takes a bare npm spec, so no
-marketplace entry is needed:
+Its plugin manager takes a bare npm spec, so no marketplace entry is needed:
 
 ```bash
 omp plugin install @better-compact/pi
@@ -44,9 +44,17 @@ pnpm build
 omp plugin install ./packages/pi
 ```
 
-There is also a manual drop-in for either host: `~/.pi/agent/extensions/extension.js`
-for pi, or a directory under `~/.omp/agent/extensions/` holding `omp.js` beside a
-`package.json` declaring `"omp": { "extensions": ["./omp.js"] }`.
+### pi
+
+```bash
+pi install npm:@better-compact/pi
+```
+
+### Manual drop-in
+
+For either host: `~/.pi/agent/extensions/extension.js` for pi, or a directory
+under `~/.omp/agent/extensions/` holding `omp.js` beside a `package.json`
+declaring `"omp": { "extensions": ["./omp.js"] }`.
 
 **Install it one way only.** Both hosts discover extensions from several roots at
 once, so a plugin *and* a drop-in means two independent instances in one session —
