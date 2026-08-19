@@ -7,6 +7,7 @@ import type { PlanSnapshot } from "@better-compact/core"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import betterCompact from "../src/extension"
 import type { PiMessage } from "../src/codec"
+import { resetSessionOwnership } from "../src/ownership"
 import { PLAN_ENTRY_TYPE } from "../src/plan-store"
 import { overTriggerConversation } from "./helpers"
 
@@ -34,6 +35,9 @@ interface HarnessOptions {
 }
 
 async function harness(options: HarnessOptions = {}): Promise<Harness> {
+    // Each harness stands in for a fresh process: session ownership is
+    // process-wide by design, and these cases reuse session ids.
+    resetSessionOwnership()
     const sessionDir = await mkdtemp(join(tmpdir(), "better-compact-pi-"))
     const agentDir = await mkdtemp(join(tmpdir(), "better-compact-pi-agent-"))
     const projectDir = await mkdtemp(join(tmpdir(), "better-compact-pi-project-"))

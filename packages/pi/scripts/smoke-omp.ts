@@ -82,7 +82,7 @@ async function main(): Promise<void> {
         compact: async () => {},
     }
 
-    factory.default({
+    const api = {
         on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
             recorded.handlers.set(event, handler)
         },
@@ -92,7 +92,8 @@ async function main(): Promise<void> {
         appendEntry: (customType: string, data: unknown) => {
             recorded.entries.push({ customType, data })
         },
-    })
+    }
+    factory.default(api)
 
     label("extension loaded and registered its handlers")
     for (const event of [
@@ -116,6 +117,30 @@ async function main(): Promise<void> {
     ]) {
         assert.ok(recorded.commands.has(command), `missing command: /${command}`)
     }
+
+    // Oh My Pi loads extensions once per session, subagents included, so a
+    // second instance is normal and must work. What must not happen is two
+    // instances driving the *same* session: `emitContext` chains every
+    // registered `context` handler, so the loser has to stay inert.
+    const duplicate: Recorded = {
+        handlers: new Map(),
+        commands: new Map(),
+        entries: [],
+        notices: [],
+    }
+    factory.default({
+        on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+            duplicate.handlers.set(event, handler)
+        },
+        registerCommand: (name: string, options: { description?: string; handler: unknown }) => {
+            duplicate.commands.set(name, options)
+        },
+        appendEntry: (customType: string, data: unknown) => {
+            duplicate.entries.push({ customType, data })
+        },
+    })
+    assert.ok(duplicate.handlers.has("context"), "a second instance still registers normally")
+    label("a second instance loaded; ownership decides which one drives a session")
 
     const call = async (event: string, payload: Record<string, unknown>): Promise<unknown> => {
         const handler = recorded.handlers.get(event)
@@ -142,6 +167,20 @@ async function main(): Promise<void> {
     assert.match(reference, /\[Better Compact context pruning applied\]/)
     label(`context transform pruned to ${transformed.messages.length} messages with a reference`)
 
+    // The duplicate saw the same session second, so it must add nothing. If it
+    // were live, this second pass would re-plan the already-pruned request.
+    const duplicateContext = recorded.handlers.get("context")
+    const duplicateHandler = duplicate.handlers.get("context")
+    assert.ok(duplicateContext && duplicateHandler)
+    const fromDuplicate = (await duplicateHandler({ type: "context", messages }, ctx)) as
+        { messages?: unknown[] } | undefined
+    assert.equal(
+        fromDuplicate,
+        undefined,
+        "the losing instance must leave the request alone, not prune it again",
+    )
+    label("the duplicate instance stayed inert for a session it does not own")
+
     const preparation = {
         firstKeptEntryId: branch.entries.at(-3)!.id,
         messagesToSummarize: messages.slice(0, -3),
@@ -165,18 +204,20 @@ async function main(): Promise<void> {
     for (const reason of ["threshold", "idle", "overflow", "incomplete"] as const) {
         await call("auto_compaction_start", { reason, action: "context-full" })
         const result = (await call("session_before_compact", compactEvent)) as
-            | { cancel?: boolean; compaction?: Record<string, unknown> }
-            | undefined
+            { cancel?: boolean; compaction?: Record<string, unknown> } | undefined
         assert.notEqual(result?.cancel, true, `${reason} must not cancel the host's run`)
         assert.ok(result?.compaction, `${reason} must return a durable compaction`)
-        await call("auto_compaction_end", { action: "context-full", aborted: false, willRetry: false })
+        await call("auto_compaction_end", {
+            action: "context-full",
+            aborted: false,
+            willRetry: false,
+        })
     }
     label("every automatic trigger committed a Better Compact compaction")
 
     await call("auto_compaction_start", { reason: "overflow", action: "context-full" })
     const recovery = (await call("session_before_compact", compactEvent)) as
-        | { cancel?: boolean; compaction?: Record<string, unknown> }
-        | undefined
+        { cancel?: boolean; compaction?: Record<string, unknown> } | undefined
     assert.ok(recovery?.compaction, "an overflow run must return a durable compaction")
     const compaction = recovery.compaction
     assert.ok(
