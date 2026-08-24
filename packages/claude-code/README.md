@@ -1,54 +1,74 @@
-# @better-compact/claude-code
+# Better Compact for Claude Code
 
-The Claude Code plugin for Better Compact. Claude Code enforces its context ceiling
-**client-side** — it refuses to send once the transcript is too large — so a wire proxy
-can't help. What controls the ceiling is the session transcript on disk, which Claude Code
-re-derives context from on resume. Better Compact compacts that transcript directly (via the
-`better-compact` CLI); this plugin is the in-session UX for it.
+> Edited and maintained by Claude. Provided as-is.
 
-- **`/better-compact:compact` command** (`commands/compact.md`): flags the current session for
-  compaction and tells you to exit. On exit, `better-compact claude --run` prunes old tool output
-  and reasoning — **keeping every message** — and reopens the session automatically. Without the
-  launcher it prints the one-shot `better-compact claude <id> --resume`.
+Claude Code slash command for the Better Compact CLI.
 
-## Setup
+## Install
 
-1. Install the CLI (provides the `better-compact` command):
+Install the CLI:
 
-   ```sh
-   npm install -g @better-compact/cli
-   ```
-
-2. Add this plugin to Claude Code (register the repository as a plugin marketplace, or copy this
-   directory into your plugin setup) to get the `/better-compact:compact` command.
-
-3. If an earlier release pointed Claude Code at the retired local proxy, undo it:
-
-   ```sh
-   better-compact install claude-code
-   ```
-
-   This removes the `env.ANTHROPIC_BASE_URL` redirect and re-enables native auto-compaction. The
-   proxy could never manage Claude Code's ceiling, and `DISABLE_AUTO_COMPACT` removed its safety
-   net — on-disk compaction replaces both.
-
-## Usage
-
-Launch Claude Code through the wrapper so compaction can reopen the session:
-
-```sh
-better-compact claude --run          # or: better-compact claude --run --resume <id>
+```bash
+npm install -g @better-compact/cli
 ```
 
-When a long session gets heavy, run `/better-compact:compact` and press Ctrl-D. Better Compact
-prunes old tool output and reasoning (keeping the whole conversation), then reopens the session.
+Add this repository as a Claude Code marketplace:
 
-Any time, from a session's project directory with the session closed:
-
-```sh
-better-compact claude <sessionId> --resume        # prune + reopen
-better-compact claude <sessionId> --aggressive    # summarize old turns (last resort; drops them from view)
-better-compact claude <sessionId> --from-backup   # restore full history, then compact
+```bash
+claude plugin marketplace add AshishKumar4/better-compact
+claude plugin install better-compact@better-compact
 ```
 
-The full transcript is always backed up to `~/.better-compact/claude-backups/` before any change.
+## Use
+
+Launch Claude Code through the wrapper:
+
+```bash
+better-compact claude --run
+```
+
+In a long session:
+
+```text
+/better-compact:compact
+```
+
+Exit with Ctrl-D. The wrapper compacts the closed session and reopens it.
+
+Without the wrapper, the command prints the one-shot command to run after exit:
+
+```bash
+better-compact claude <session-id> --resume
+```
+
+## Other CLI modes
+
+```bash
+better-compact claude <session-id> --keep-tokens 40000
+better-compact claude <session-id> --from-backup
+better-compact claude <session-id> --aggressive
+```
+
+See [the CLI README](../cli/README.md) for all options.
+
+## Legacy cleanup
+
+Remove an old local-proxy configuration with:
+
+```bash
+better-compact install claude-code
+```
+
+The command is a no-op on a fresh installation.
+
+## Architecture
+
+The plugin does not edit the live session. `/better-compact:compact` writes a queue marker for the current session and asks the user to exit.
+
+`better-compact claude --run` checks the queue after Claude Code exits, compacts the transcript through the CLI, then reopens the same session.
+
+Claude Code rebuilds its context state from the transcript on resume. This is why compaction runs after exit instead of through a request hook.
+
+## License
+
+AGPL-3.0-or-later

@@ -1,15 +1,41 @@
-# Scripts
+# OpenCode scripts
 
-Packaging and development tooling for the OpenCode plugin. Nothing here ships in the npm package or release tarball.
+> Edited and maintained by Claude. Provided as-is.
 
-## Packaging
+Development and release tools for the OpenCode package. These files are not included in the npm package.
 
-- `verify-package.mjs` — CI gate: required files, package.json shape, runtime import hygiene, built entrypoint smoke, and exact npm tarball contents.
-- `verify-release.mjs` — release gate: the pushed `v*` tag must match this package's version.
-- `smoke-opencode-install.mjs` — installs the package through a real OpenCode binary (`opencode plugin ...`) in a sandbox and asserts the server and TUI plugins load.
+## Package checks
 
-## Session analysis (dev tools)
+| Script                       | Use                                                                               |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| `verify-package.mjs`         | Check required files, manifest fields, imports, entrypoints, and tarball contents |
+| `verify-release.mjs`         | Check that a `v*` tag matches the package version                                 |
+| `smoke-opencode-install.mjs` | Install through a real OpenCode binary and load both plugin entrypoints           |
 
-- `opencode_api.py` — shared helpers for reading the local OpenCode storage.
-- `opencode-find-session`, `opencode-get-message`, `opencode-session-timeline` — locate and inspect stored sessions and messages.
-- `opencode-token-stats`, `opencode-message-token-counts`, `opencode-better-compact-stats` — token usage and pruning statistics over stored sessions.
+Run from `packages/opencode`:
+
+```bash
+pnpm verify:package
+pnpm verify:release
+pnpm smoke:install
+```
+
+## Session inspection
+
+| Script                          | Use                                        |
+| ------------------------------- | ------------------------------------------ |
+| `opencode-find-session`         | Find a stored session                      |
+| `opencode-get-message`          | Print one message                          |
+| `opencode-session-timeline`     | Print a session timeline                   |
+| `opencode-token-stats`          | Summarize token usage                      |
+| `opencode-message-token-counts` | Show token counts by message               |
+| `opencode-better-compact-stats` | Show Better Compact plan and savings data  |
+| `opencode_api.py`               | Shared storage helpers used by the scripts |
+
+Run a script directly from this directory:
+
+```bash
+./opencode-find-session <query>
+./opencode-session-timeline <session-id>
+./opencode-better-compact-stats <session-id>
+```
