@@ -2,7 +2,7 @@ name: CI
 
 on:
     push:
-        branches: [master]
+        branches: [main]
     pull_request:
     schedule:
         # OpenTUI and OpenCode release on their own cadence and can make the
