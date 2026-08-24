@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AshishKumar4/Better-Compact/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AshishKumar4/Better-Compact/ci.yml?branch=master&style=flat-square&label=CI" alt="CI status"></a>
+  <a href="https://github.com/AshishKumar4/Better-Compact/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AshishKumar4/Better-Compact/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
   <a href="https://www.npmjs.com/package/better-compact"><img src="https://img.shields.io/npm/v/better-compact?style=flat-square&label=OpenCode" alt="OpenCode package version"></a>
   <a href="https://www.npmjs.com/package/@better-compact/pi"><img src="https://img.shields.io/npm/v/%40better-compact%2Fpi?style=flat-square&label=OMP%20%2B%20pi" alt="OMP and pi package version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-818CF8?style=flat-square" alt="AGPL-3.0-or-later"></a>

@@ -1,7 +1,7 @@
 # @better-compact/cli
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/AshishKumar4/Better-Compact/master/assets/readme/hero.svg" alt="Better Compact staged context pruning." width="100%">
+  <img src="https://raw.githubusercontent.com/AshishKumar4/Better-Compact/main/assets/readme/hero.svg" alt="Better Compact staged context pruning." width="100%">
 </p>
 
 <p align="center">
