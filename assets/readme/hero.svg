@@ -73,7 +73,7 @@
       <rect x="18" y="17" width="126" height="8" rx="4" fill="#22D3EE" fill-opacity="0.62"/>
       <rect x="18" y="33" width="174" height="8" rx="4" fill="#38BDF8" fill-opacity="0.42"/>
       <rect x="18" y="49" width="92" height="8" rx="4" fill="#818CF8" fill-opacity="0.52"/>
-      <text x="0" y="101" fill="#94A3B8" font-size="15" font-weight="650">WORKING SET</text>
+      <text x="0" y="101" fill="#94A3B8" font-size="15" font-weight="650">LIGHT TARGET</text>
       <text x="171" y="101" fill="#67E8F9" font-size="15" font-weight="700">35%</text>
     </g>
 
