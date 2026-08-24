@@ -1,79 +1,50 @@
-# Better Compact
+# Better Compact for OpenCode
 
-OpenCode plugin that keeps long-running sessions usable with staged, pruning-first context management.
+> Edited and maintained by Claude. Provided as-is.
 
-Better Compact preserves raw user intent, prunes old tool-heavy context first, writes transcript references for exact recall, and summarizes old assistant turns only when lighter pruning is not enough.
+Staged context pruning for OpenCode 1.17.13 and newer.
 
 ## Install
-
-Requires OpenCode 1.17.13 or a newer 1.x release. Install globally with OpenCode's built-in plugin manager:
 
 ```bash
 opencode plugin better-compact --global
 ```
 
-Install an explicit version:
+Restart OpenCode after installation.
 
-```bash
-opencode plugin better-compact@0.1.5 --global
-```
-
-OpenCode downloads the prebuilt package with its embedded package manager and updates both plugin configurations:
+The installer updates:
 
 ```text
 ~/.config/opencode/opencode.json
 ~/.config/opencode/tui.json
 ```
 
-OpenCode also preserves and updates existing `opencode.jsonc` and `tui.jsonc` files.
-
-No separate Node.js, Bun, pnpm, npm, curl, or tar installation is required.
-
-Restart OpenCode after installation.
+JSONC files are preserved when present.
 
 ## Commands
 
-- `/better-compact` runs staged pruning immediately.
-- `/better-compact context` shows the token-usage breakdown for the current session.
-- `/better-compact stats` shows the active pruning plan for the current session.
-- `/better-compact help` lists the available commands.
-- `/better-compact-settings` opens global compaction and summary-effort settings.
-
-## How It Works
-
-Better Compact applies a virtual context plan to OpenCode's outgoing model request. It does not rewrite OpenCode's durable session history.
-
-Default light mode:
-
-- Prunes loaded skill context.
-- Prunes old tool calls/results while preserving recent tool context.
-- Prunes thinking/reasoning only if needed.
-- Prunes remaining tool calls/results only if needed.
-- Summarizes high-value old assistant turns only if needed.
-- Writes raw transcripts under `.opencode/better-compact/sessions/...` for exact recall (private file modes, gitignored).
-
-The TUI shows live progress, context-window bars, stages completed, and final savings.
-
-OpenCode does not expose provider error bodies or retry control to in-process plugins, so Better
-Compact cannot reactively retry an overflow there. Proactive threshold triggering is the primary
-protection.
+| Command                    | Action                 |
+| -------------------------- | ---------------------- |
+| `/better-compact`          | Run Better Compact now |
+| `/better-compact context`  | Show context usage     |
+| `/better-compact stats`    | Show the active plan   |
+| `/better-compact help`     | List commands          |
+| `/better-compact-settings` | Open settings          |
 
 ## Configuration
 
-Better Compact searches config files in this order:
+Better Compact reads these files in order:
 
-1. `~/.config/opencode/better-compact.jsonc` or `better-compact.json`
-2. `$OPENCODE_CONFIG_DIR/better-compact.jsonc` or `better-compact.json`
-3. `.opencode/better-compact.jsonc` or `better-compact.json`
+1. `~/.config/opencode/better-compact.jsonc` or `.json`
+2. `$OPENCODE_CONFIG_DIR/better-compact.jsonc` or `.json`
+3. `.opencode/better-compact.jsonc` or `.json`
 
-Example:
+Project settings override global settings.
 
 ```jsonc
 {
     "$schema": "https://raw.githubusercontent.com/AshishKumar4/better-compact/master/packages/opencode/better-compact.schema.json",
     "enabled": true,
-    "autoUpdate": false,
-    "debug": false,
     "compaction": {
         "automatic": true,
         "preset": "light",
@@ -82,20 +53,31 @@ Example:
 }
 ```
 
-Compaction strength:
+| Preset     | Trigger | Target | Recent tool budget |
+| ---------- | ------: | -----: | -----------------: |
+| `light`    |     85% |    35% |         40k tokens |
+| `moderate` |     75% |    25% |         30k tokens |
+| `max`      |     60% |    15% |         12k tokens |
 
-- **Gentle** (`light`): waits longer and preserves more recent tool output.
-- **Balanced** (`moderate`): compacts earlier and keeps a moderate recent tool window.
-- **Aggressive** (`max`): frees the most working room and keeps less old tool output verbatim.
-- **Custom**: choose the automatic trigger, deep-summary goal, and recent tool-output budget.
+Changes made in `/better-compact-settings` apply to later runs without restarting OpenCode.
 
-Summary effort is configured separately. `inherit` uses the model default. Low, medium, high, and max are applied only when the active model advertises a matching variant; unsupported levels safely fall back to the model default.
+## Upgrade
 
-The settings panel saves global behavior to `~/.config/opencode/better-compact.jsonc`, preserving comments and unrelated settings. Changes apply to subsequent manual and automatic runs without restarting OpenCode.
+Use an explicit version to force a fresh OpenCode package cache entry:
+
+```bash
+opencode plugin better-compact@0.2.6 --global
+```
+
+If the plugin is missing after a failed or stale install, clear its cache and restart OpenCode:
+
+```bash
+rm -rf ~/.cache/opencode/packages/better-compact*
+```
 
 ## Uninstall
 
-Remove `better-compact` from the `plugin` arrays in the JSON or JSONC equivalents of:
+Remove `better-compact` from the `plugin` arrays in:
 
 ```text
 ~/.config/opencode/opencode.json
@@ -106,16 +88,17 @@ Restart OpenCode.
 
 ## Development
 
-This package is the OpenCode adapter in the Better Compact pnpm workspace; the platform-neutral pruning ladder lives in `@better-compact/core` and is bundled into the published artifacts. From the repository root:
+From the repository root:
 
 ```bash
 pnpm install
-pnpm run typecheck
-pnpm test
-pnpm run build
+pnpm --filter better-compact typecheck
+pnpm --filter better-compact test
+pnpm --filter better-compact build
+pnpm --filter better-compact check:package
 ```
 
-For local development, point OpenCode at this checkout:
+Use the checkout directly:
 
 ```json
 {
@@ -123,7 +106,7 @@ For local development, point OpenCode at this checkout:
 }
 ```
 
-For the TUI plugin, add this to `~/.config/opencode/tui.json`:
+Add the TUI entry to `~/.config/opencode/tui.json`:
 
 ```json
 {
@@ -131,32 +114,34 @@ For the TUI plugin, add this to `~/.config/opencode/tui.json`:
 }
 ```
 
-Restart OpenCode after changing plugin config.
+## Architecture
 
-## Releases
+OpenCode runs Better Compact through two bundled entrypoints:
 
-CI uses pnpm and verifies every push/PR with:
-
-- typecheck
-- tests
-- host-shaped OpenTUI visual/runtime tests under Bun
-- production build
-- package verification
-
-Tag releases as `v*`:
-
-```bash
-git tag v0.1.5
-git push origin v0.1.5
+```text
+dist/index.js   server hooks and pruning runtime
+dist/tui.js     commands, settings, reports, progress UI
 ```
 
-The release workflow verifies that the tag matches this package's version, builds and tests the compiled server and TUI artifacts, publishes the package to npm with provenance, and creates the GitHub Release.
+The server applies a virtual plan to each outgoing request. OpenCode session history remains unchanged.
 
-## Upstream
+The pruning order is:
 
-Better Compact is forked from [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning), originally published as `@tarquinen/opencode-dcp` by tarquinen and contributors.
+1. Remove loaded skill text.
+2. Supersede repeated reads and remove stale failed-tool inputs.
+3. Replace old tool calls and results with action stubs.
+4. Remove old reasoning if more space is needed.
+5. Remove remaining old tool traffic if more space is needed.
+6. Collapse selected assistant runs and summarize them.
+7. Use a rolling prefix summary as a last resort.
 
-This fork keeps the upstream AGPL-3.0-or-later license and builds on the original plugin architecture while changing the product direction to boundary-time context pruning and Better Compact branding.
+Raw history for each planned range is stored under:
+
+```text
+.opencode/better-compact/sessions/<session-id>/<range-hash>.md
+```
+
+The model receives a reference to that file. Plans are range-hashed and replayed until prefix edits or context regrowth require a new plan.
 
 ## License
 

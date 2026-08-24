@@ -1,54 +1,119 @@
 # @better-compact/cli
 
-On-disk context compaction for Claude Code sessions. Claude Code enforces its context ceiling
-client-side and anchors its meter on token counts recorded inside the session transcript, so
-nothing on the wire can help it — what controls the ceiling is the transcript on disk, which
-Claude Code re-derives context from on resume. This CLI compacts that transcript directly.
+> Edited and maintained by Claude. Provided as-is.
+
+On-disk compaction for Claude Code sessions.
+
+## Install
+
+Requires Node.js 22.15 or newer.
+
+```bash
+npm install -g @better-compact/cli
+```
 
 ## Usage
 
-```sh
-better-compact claude [sessionId] [--resume] [--aggressive] [--from-backup] [--keep-tokens N]
-better-compact claude --run [claude args...]
+Compact a closed session:
+
+```bash
+better-compact claude <session-id>
 ```
 
-Compacts a **closed** session's transcript (`~/.claude/projects/<project>/<sessionId>.jsonl`) so it
-reopens under the context limit. The default keeps **every message**: old tool outputs and oversized
-tool inputs become short stubs (tool name, call id, and primary target preserved), old reasoning
-blocks are dropped, and the recent tail (`--keep-tokens`, default 25k) stays verbatim. It also
-zeroes the stale input-side token counts Claude Code seeds its context meter from — recorded usage
-that describes requests which no longer exist (output tokens are kept) — and resumes with the
-model's `[1m]` long-context variant when the transcript proves the session needs it.
+Compact and reopen it:
 
-- `--aggressive` reproduces Claude Code's own `/compact` (append-only `compact_boundary` +
-  summary entries; old turns leave the context). Use it when stubbing alone cannot fit the window.
-- `--from-backup` restores each entry's original content from the accumulated backups (oldest
-  version wins; turns added after any backup are kept), then compacts.
-- `--resume` reopens the session afterward, inheriting your terminal.
-- `--run` wraps `claude` so the `/better-compact:compact` command (from the
-  [companion plugin](../claude-code/README.md)) can queue a compaction: exit the session and it
-  prunes and reopens automatically — no tmux, no wrapper scripts.
-
-Every run backs up the original to `~/.better-compact/claude-backups/` before writing, verifies
-the rewritten transcript's integrity, and refuses to touch a live session (registry pid check plus
-a scan for still-starting `claude --resume` processes).
-
-## Setup
-
-```sh
-npm install -g @better-compact/cli
-better-compact install claude-code   # only needed to unwind a legacy proxy redirect
+```bash
+better-compact claude <session-id> --resume
 ```
 
-Earlier releases routed Claude Code through a local wire proxy and disabled native
-auto-compaction; both are retired. `install claude-code` removes that legacy redirect from
-`~/.claude/settings.json` if present (restoring any preserved real gateway URL) and re-enables
-native auto-compaction. On a fresh machine it is a no-op — there is nothing to wire up.
+Run Claude Code through the wrapper:
 
-## How it decides what to prune
+```bash
+better-compact claude --run
+```
 
-The pruning decisions come from the shared Better Compact ladder
-([`@better-compact/core`](../core/README.md)) over the same Anthropic-wire codec that models
-Claude Code's transcript content: tool calls and their results pair into single items, inline
-system-reminders are preserved (and re-positioned as user-role reminders where the API's
-placement rules require), and unknown content survives verbatim.
+The wrapper supports the companion plugin's `/better-compact:compact` command. Exit the session after running the command; the wrapper compacts and reopens it.
+
+## Options
+
+| Option                   | Action                                                  |
+| ------------------------ | ------------------------------------------------------- |
+| `--resume`               | Reopen the session after compaction                     |
+| `--run [claude args...]` | Launch Claude Code and handle queued compaction on exit |
+| `--keep-tokens <n>`      | Keep a larger or smaller raw tail; default is 25k       |
+| `--from-backup`          | Restore original entries before compacting              |
+| `--aggressive`           | Write a compact boundary and summary                    |
+
+Examples:
+
+```bash
+better-compact claude <session-id> --keep-tokens 40000 --resume
+better-compact claude <session-id> --from-backup
+better-compact claude <session-id> --aggressive --resume
+```
+
+## Companion plugin
+
+Install the Claude Code slash command:
+
+```bash
+claude plugin marketplace add AshishKumar4/better-compact
+claude plugin install better-compact@better-compact
+```
+
+Then launch Claude Code through the wrapper:
+
+```bash
+better-compact claude --run
+```
+
+Run `/better-compact:compact` in the session, then exit with Ctrl-D.
+
+## Legacy cleanup
+
+Older Better Compact releases used a local proxy. Remove that configuration with:
+
+```bash
+better-compact install claude-code
+```
+
+On a fresh installation, this command makes no changes.
+
+## Safety
+
+The CLI operates on closed sessions only. Before replacing a transcript, it:
+
+1. checks that the session is not active;
+2. writes a backup under `~/.better-compact/claude-backups/`;
+3. compacts a structured copy;
+4. validates the rewritten transcript;
+5. writes a temporary file and renames it into place.
+
+## Behavior
+
+Normal mode keeps every conversation entry. It replaces old tool output and large tool input with short stubs, removes old reasoning, keeps the recent tail, and resets stale input accounting.
+
+`--aggressive` appends Claude Code-compatible compact boundary and summary entries. Old turns leave the active context after resume.
+
+## Development
+
+From the repository root:
+
+```bash
+pnpm install
+pnpm --filter @better-compact/cli typecheck
+pnpm --filter @better-compact/cli test
+pnpm --filter @better-compact/cli build
+```
+
+## Architecture
+
+Claude Code enforces its context limit before sending the model request. It rebuilds that state from session JSONL when a session resumes. Better Compact edits the closed transcript because an outgoing request transform cannot change that client-side state.
+
+The CLI uses the shared Anthropic codec to pair tool calls with results and preserve unknown content. It uses the shared pruning helpers for estimates, tool targets, and boundary selection.
+
+Session lookup, live-process checks, backup recovery, JSONL parsing, usage reset, atomic replacement, and resume arguments remain Claude Code-specific.
+
+## License
+
+AGPL-3.0-or-later
