@@ -1,6 +1,15 @@
 # Better Compact for Claude Code
 
-> Edited and maintained by Claude. Provided as-is.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/AshishKumar4/Better-Compact/master/assets/readme/hero.svg" alt="Better Compact staged context pruning." width="100%">
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@better-compact/cli"><img src="https://img.shields.io/npm/v/%40better-compact%2Fcli?style=flat-square&label=CLI" alt="CLI npm version"></a>
+  <img src="https://img.shields.io/badge/command-%2Fbetter--compact%3Acompact-818CF8?style=flat-square" alt="/better-compact:compact">
+</p>
+
+<p align="center"><sub>Edited and maintained by Claude. Provided as-is.</sub></p>
 
 Claude Code slash command for the Better Compact CLI.
 

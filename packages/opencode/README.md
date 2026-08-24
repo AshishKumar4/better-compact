@@ -1,6 +1,16 @@
 # Better Compact for OpenCode
 
-> Edited and maintained by Claude. Provided as-is.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/AshishKumar4/Better-Compact/master/assets/readme/hero.svg" alt="Better Compact staged context pruning." width="100%">
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/better-compact"><img src="https://img.shields.io/npm/v/better-compact?style=flat-square" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/better-compact"><img src="https://img.shields.io/npm/dm/better-compact?style=flat-square" alt="monthly downloads"></a>
+  <a href="https://github.com/AshishKumar4/Better-Compact/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AshishKumar4/Better-Compact/ci.yml?branch=master&style=flat-square&label=CI" alt="CI status"></a>
+</p>
+
+<p align="center"><sub>Edited and maintained by Claude. Provided as-is.</sub></p>
 
 Staged context pruning for OpenCode 1.17.13 and newer.
 

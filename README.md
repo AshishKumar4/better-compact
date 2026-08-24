@@ -1,10 +1,35 @@
 # Better Compact
 
-> Edited and maintained by Claude. Provided as-is.
+<p align="center">
+  <img src="assets/readme/hero.svg" alt="Better Compact turns full agent context into a smaller working set through staged pruning." width="100%">
+</p>
 
-Context pruning for OpenCode, Oh My Pi, pi, and Claude Code.
+<p align="center">
+  <a href="https://github.com/AshishKumar4/Better-Compact/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/AshishKumar4/Better-Compact/ci.yml?branch=master&style=flat-square&label=CI" alt="CI status"></a>
+  <a href="https://www.npmjs.com/package/better-compact"><img src="https://img.shields.io/npm/v/better-compact?style=flat-square&label=OpenCode" alt="OpenCode package version"></a>
+  <a href="https://www.npmjs.com/package/@better-compact/pi"><img src="https://img.shields.io/npm/v/%40better-compact%2Fpi?style=flat-square&label=OMP%20%2B%20pi" alt="OMP and pi package version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-818CF8?style=flat-square" alt="AGPL-3.0-or-later"></a>
+</p>
 
-Better Compact removes stale tool output and reasoning in stages. It keeps recent work intact, stores old context on disk, and summarizes assistant turns only when pruning is not enough.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#how-does-it-work">How it works</a> ·
+  <a href="#architecture">Architecture</a>
+</p>
+
+<p align="center"><sub>Edited and maintained by Claude. Provided as-is.</sub></p>
+
+Most coding agents wait until the context is full, then replace the old conversation with one summary. Exact tool output, failed attempts, user wording, and decision history disappear together.
+
+Better Compact reduces context in stages. It removes stale tool traffic and old reasoning first, summarizes selected assistant runs only when needed, and keeps the raw history on disk for recall.
+
+| Plain compaction                             | Better Compact                                            |
+| -------------------------------------------- | --------------------------------------------------------- |
+| One summary replaces the old conversation    | Each pruning stage runs only when needed                  |
+| Tool calls and failures lose their structure | Removed tools leave action stubs with status and errors   |
+| Exact old output is unavailable              | Raw history stays on disk with a model-readable reference |
+| Every compaction changes the prefix          | Validated plans replay the same stable prefix             |
 
 ## Install
 
@@ -97,6 +122,19 @@ For pi and OMP, create `<agent-dir>/better-compact.json`:
 pi also reads a trusted project override from `.pi/better-compact.json`. OMP reads the global file only.
 
 OpenCode uses `~/.config/opencode/better-compact.jsonc` and `.opencode/better-compact.jsonc`. See [the OpenCode package README](packages/opencode/README.md) for its full schema.
+
+## How does it work?
+
+<p align="center">
+  <img src="assets/readme/how-it-works.svg" alt="Inspect, prune, summarize, and preserve." width="100%">
+</p>
+
+1. **Inspect.** Estimate the request, validate any stored plan, and choose a raw tail that must stay unchanged.
+2. **Prune.** Supersede repeated reads, stub old tool traffic, and remove old reasoning until the target fits.
+3. **Summarize.** Collapse selected assistant runs with a side-model call when pruning alone is not enough.
+4. **Preserve.** Write the affected raw history to disk, insert a reference, and replay the same plan on later requests.
+
+Better Compact escalates one stage at a time. A light pass can stop after pruning old tools. A heavy pass can continue through reasoning, assistant-run summaries, and a rolling prefix summary.
 
 ## Packages
 

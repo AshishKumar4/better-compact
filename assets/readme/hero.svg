@@ -1,0 +1,89 @@
+<svg width="1200" height="440" viewBox="0 0 1200 440" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Better Compact</title>
+  <desc id="desc">A staged context-pruning pipeline reduces a full agent context to a compact working set while preserving raw history.</desc>
+  <defs>
+    <linearGradient id="bg" x1="60" y1="20" x2="1140" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="0.52" stop-color="#171329"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="376" y1="112" x2="848" y2="338" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C084FC"/>
+      <stop offset="0.52" stop-color="#818CF8"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#C084FC" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#22D3EE" stop-opacity="0.05"/>
+    </linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M36 0H0V36" stroke="#94A3B8" stroke-opacity="0.055"/>
+    </pattern>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="440" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="440" rx="28" fill="url(#grid)"/>
+  <rect x="1" y="1" width="1198" height="438" rx="27" stroke="#A78BFA" stroke-opacity="0.22" stroke-width="2"/>
+  <circle cx="1024" cy="74" r="176" fill="#22D3EE" fill-opacity="0.035"/>
+  <circle cx="198" cy="382" r="218" fill="#C084FC" fill-opacity="0.045"/>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="70" y="91" fill="#C4B5FD" font-size="16" font-weight="700" letter-spacing="3.6">CONTEXT PRUNING FOR CODING AGENTS</text>
+    <text x="66" y="167" fill="#F8FAFC" font-size="68" font-weight="760" letter-spacing="-2.8">Better Compact</text>
+    <text x="70" y="215" fill="#CBD5E1" font-size="25" font-weight="430">Prune stale context first. Summarize only when needed.</text>
+
+    <g transform="translate(70 274)">
+      <rect width="212" height="74" rx="14" fill="#0F172A" stroke="#475569"/>
+      <rect x="18" y="17" width="80" height="8" rx="4" fill="#64748B"/>
+      <rect x="18" y="33" width="150" height="8" rx="4" fill="#475569"/>
+      <rect x="18" y="49" width="174" height="8" rx="4" fill="#334155"/>
+      <text x="0" y="101" fill="#94A3B8" font-size="15" font-weight="650">FULL CONTEXT</text>
+      <text x="150" y="101" fill="#FCA5A5" font-size="15" font-weight="700">100%</text>
+    </g>
+
+    <path d="M308 311H382" stroke="url(#accent)" stroke-width="3" stroke-linecap="round"/>
+    <path d="M370 301L382 311L370 321" stroke="#A78BFA" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <g transform="translate(400 256)">
+      <rect width="388" height="111" rx="18" fill="url(#fade)" stroke="#8B5CF6" stroke-opacity="0.65"/>
+      <g font-size="15" font-weight="650">
+        <rect x="18" y="18" width="104" height="30" rx="15" fill="#2E2150"/>
+        <text x="37" y="38" fill="#D8B4FE">old tools</text>
+        <rect x="132" y="18" width="103" height="30" rx="15" fill="#242A52"/>
+        <text x="152" y="38" fill="#C7D2FE">reasoning</text>
+        <rect x="245" y="18" width="125" height="30" rx="15" fill="#17384A"/>
+        <text x="264" y="38" fill="#A5F3FC">assistant runs</text>
+      </g>
+      <path d="M34 72H354" stroke="url(#accent)" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="72" cy="72" r="7" fill="#C084FC"/>
+      <circle cx="194" cy="72" r="7" fill="#818CF8"/>
+      <circle cx="316" cy="72" r="7" fill="#22D3EE"/>
+      <text x="111" y="98" fill="#E2E8F0" font-size="15" font-weight="700">STAGED PRUNING LADDER</text>
+    </g>
+
+    <path d="M808 311H882" stroke="url(#accent)" stroke-width="3" stroke-linecap="round"/>
+    <path d="M870 301L882 311L870 321" stroke="#22D3EE" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <g transform="translate(900 274)">
+      <rect width="230" height="74" rx="14" fill="#0C1C2A" stroke="#22D3EE" stroke-opacity="0.72"/>
+      <rect x="18" y="17" width="126" height="8" rx="4" fill="#22D3EE" fill-opacity="0.62"/>
+      <rect x="18" y="33" width="174" height="8" rx="4" fill="#38BDF8" fill-opacity="0.42"/>
+      <rect x="18" y="49" width="92" height="8" rx="4" fill="#818CF8" fill-opacity="0.52"/>
+      <text x="0" y="101" fill="#94A3B8" font-size="15" font-weight="650">WORKING SET</text>
+      <text x="171" y="101" fill="#67E8F9" font-size="15" font-weight="700">35%</text>
+    </g>
+
+    <g transform="translate(872 383)">
+      <path d="M0 0H258" stroke="#475569" stroke-dasharray="4 6"/>
+      <path d="M14 14H34V34H14V14Z" stroke="#A78BFA" stroke-width="2"/>
+      <path d="M19 20H29M19 25H29M19 30H26" stroke="#A78BFA" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="46" y="29" fill="#94A3B8" font-size="14" font-weight="550">RAW HISTORY KEPT ON DISK</text>
+    </g>
+
+    <text x="70" y="410" fill="#64748B" font-size="14" font-weight="600">OpenCode  ·  Oh My Pi  ·  pi  ·  Claude Code</text>
+  </g>
+</svg>
