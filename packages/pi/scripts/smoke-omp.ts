@@ -20,7 +20,7 @@ import { join } from "node:path"
 
 /** Shape of the built artifact under test. */
 interface ExtensionFactory {
-    default: (api: unknown) => void
+    default: (api: unknown) => void | Promise<void>
 }
 
 interface RegisteredCommand {
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
             recorded.entries.push({ customType, data })
         },
     }
-    factory.default(api)
+    await factory.default(api)
 
     label("extension loaded and registered its handlers")
     for (const event of [
@@ -133,7 +133,7 @@ async function main(): Promise<void> {
         entries: [],
         notices: [],
     }
-    factory.default({
+    await factory.default({
         on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
             duplicate.handlers.set(event, handler)
         },
@@ -223,31 +223,59 @@ async function main(): Promise<void> {
     const modeCommand = duplicate.commands.get("better-compact-mode")
     assert.ok(modeCommand, "the duplicate instance owns the last-registered command name")
     await modeCommand.handler("omp", ctx)
-    for (const action of ["context-full", "snapcompact", "shake", "handoff"] as const) {
-        await call("auto_compaction_start", { reason: "threshold", action })
-        const nativeOwned = await call("session_before_compact", compactEvent)
-        assert.equal(
-            nativeOwned,
-            undefined,
-            `OMP ownership must leave ${action} unanswered so the native strategy runs`,
-        )
+    const activeStillBetter = (await call("session_before_compact", compactEvent)) as
+        { compaction?: unknown } | undefined
+    assert.ok(
+        activeStillBetter?.compaction,
+        "mode changes must not leave OMP in a half-switched session",
+    )
+
+    const native: Recorded = {
+        handlers: new Map(),
+        commands: new Map(),
+        entries: [],
+        notices: [],
     }
-    const transformedWithNativeOwner = (await call("context", { messages })) as
-        { messages?: unknown[] } | undefined
+    await factory.default({
+        on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+            native.handlers.set(event, handler)
+        },
+        registerCommand: (name: string, options: RegisteredCommand) => {
+            native.commands.set(name, options)
+        },
+        appendEntry: (customType: string, data: unknown) => {
+            native.entries.push({ customType, data })
+        },
+    })
+    assert.equal(
+        native.handlers.has("session_before_compact"),
+        false,
+        "OMP ownership must register no compaction hook so native speculation remains enabled",
+    )
+
+    const nativeCtx = {
+        ...ctx,
+        sessionManager: {
+            ...ctx.sessionManager,
+            getSessionId: () => "smoke-native-session",
+        },
+    }
+    const nativeStart = native.handlers.get("session_start")
+    const nativeContext = native.handlers.get("context")
+    assert.ok(nativeStart && nativeContext)
+    await nativeStart({ type: "session_start" }, nativeCtx)
+    const transformedWithNativeOwner = (await nativeContext(
+        { type: "context", messages },
+        nativeCtx,
+    )) as { messages?: unknown[] } | undefined
     assert.ok(
         transformedWithNativeOwner?.messages,
         "request pruning stays active when OMP owns committed compaction",
     )
-    label("OMP ownership ran the native strategy while request pruning stayed active")
+    label("new OMP-owned sessions keep request pruning and register no compaction hook")
 
     await modeCommand.handler("better-compact", ctx)
-    const betterOwned = (await call("session_before_compact", compactEvent)) as
-        { compaction?: unknown } | undefined
-    assert.ok(
-        betterOwned?.compaction,
-        "Better Compact ownership must supply the committed compaction",
-    )
-    label("Better Compact ownership resumed without restarting the session")
+    label("Better Compact ownership was restored for new sessions")
 
     await call("auto_compaction_start", { reason: "overflow", action: "context-full" })
     const recovery = (await call("session_before_compact", compactEvent)) as

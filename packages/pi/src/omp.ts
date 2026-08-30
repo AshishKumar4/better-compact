@@ -4,7 +4,6 @@ import {
     buildSessionContext,
     getAgentDir,
     getSettingsListTheme,
-    settings as ompSettings,
     type ExtensionAPI,
     type ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent"
@@ -14,7 +13,6 @@ import { ompCodec, ompSpec } from "./omp/codec"
 import { decideCompaction, formatDurableCompaction, type CompactionTrigger } from "./omp/compaction"
 import {
     commandOmpCompactionOwner,
-    currentOmpCompactionOwner,
     isOmpCompactionOwner,
     loadOmpCompactionOwner,
     OMP_COMPACTION_OWNERS,
@@ -39,23 +37,6 @@ import { WidgetComponent } from "./tui/widget"
  * just without LLM polish on the collapsed runs.
  */
 const COMPACT_SUMMARY_DEADLINE_MS = 20_000
-
-/**
- * Strategies under which Better Compact does not reliably own compaction.
- *
- * `handoff` and `shake` each run their own path first and only fall back to the
- * context-full body that consults this hook — handoff when it produces no
- * document, shake when it finds nothing eligible to drop — so ownership is
- * intermittent rather than absent. `off` disables maintenance entirely and never
- * reaches the hook at all.
- */
-const UNRELIABLE_STRATEGIES: Record<string, string> = {
-    handoff:
-        "hands the session off first and only falls back to this hook when it produces no document",
-    shake: "drops content inline first and only falls back to this hook when it finds nothing to drop",
-    off: "disables context maintenance altogether, so the hook never runs",
-}
-
 const logger: Logger = {
     info() {},
     debug() {},
@@ -110,47 +91,16 @@ function createOmpHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, OmpAgent
     }
 }
 
-export default function betterCompactOmp(pi: ExtensionAPI) {
+export default async function betterCompactOmp(pi: ExtensionAPI) {
     const runtime = createRuntime(createOmpHost(pi))
     const ownerPath = join(getAgentDir(), CONFIG_FILE)
-    const compactionOwner = () => currentOmpCompactionOwner(ownerPath)
-    let strategyWarned = false
+    const activeCompactionOwner = await loadOmpCompactionOwner(ownerPath)
     /**
      * The reason Oh My Pi is compacting. `auto_compaction_start` fires before
      * `session_before_compact`; a compact event with nothing recorded here is
      * the manual `/compact` path.
      */
     let pendingTrigger: CompactionTrigger | undefined
-
-    const ompStrategy = (): string | undefined => {
-        try {
-            return ompSettings.get("compaction.strategy")
-        } catch {
-            return undefined
-        }
-    }
-
-    /**
-     * Oh My Pi routes `handoff` and `shake` to their own paths first and `off`
-     * disables maintenance, so under those Better Compact does not reliably own
-     * compaction. Warn once rather than mutating the user's configuration.
-     *
-     * Reading the setting is best-effort on purpose: `settings.get` throws
-     * outright when the host has not initialized `Settings` yet (embedded and
-     * test hosts do not), and a diagnostic must never be the reason session
-     * rehydration fails.
-     */
-    const warnUnreliableStrategy = (ctx: ExtensionContext): void => {
-        if (compactionOwner() === "omp" || strategyWarned) return
-        const strategy = ompStrategy()
-        const reason = strategy === undefined ? undefined : UNRELIABLE_STRATEGIES[strategy]
-        if (!reason) return
-        strategyWarned = true
-        ctx.ui.notify(
-            `Better Compact does not reliably own automatic compaction while compaction.strategy is "${strategy}" — it ${reason}. Set it to "context-full" or "snapcompact".`,
-            "warning",
-        )
-    }
 
     /**
      * Oh My Pi keeps one extension runtime across new/resume/fork/handoff
@@ -163,8 +113,6 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         if (!runtime.owns(ctx)) return
         pendingTrigger = undefined
         await runtime.rehydrate(ctx)
-        await loadOmpCompactionOwner(ownerPath)
-        warnUnreliableStrategy(ctx)
     }
 
     pi.on("session_start", (_event, ctx) => rehydrate(ctx))
@@ -192,94 +140,96 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         }
     })
 
-    /**
-     * Better Compact answers every compaction Oh My Pi decides to run — manual
-     * `/compact`, the pre-prompt and mid-turn thresholds, idle maintenance, and
-     * overflow recovery — and the native summarizer never runs.
-     *
-     * The host's durable shape is one summary string plus a contiguous tail, so
-     * the ladder's compacted prefix is serialized into that slot: user turns as
-     * written, dropped tool calls as one-line stubs, collapsed runs carrying the
-     * summaries paid for here, and a pointer to the raw transcript. The host then
-     * persists it, rebuilds context, rebases accounting and resets dependent
-     * state exactly as it would for its own summarizer.
-     *
-     * Returning nothing hands the run back to the native summarizer rather than
-     * leaving the session uncompacted.
-     */
-    pi.on("session_before_compact", async (event, ctx) => {
-        const trigger = pendingTrigger ?? "manual"
-        try {
-            if (!runtime.owns(ctx) || compactionOwner() === "omp") return
-            const contextLimit = ctx.model?.contextWindow
-            if (!contextLimit || contextLimit <= 0) return
-            const messages = buildSessionContext(event.branchEntries).messages
-            if (messages.length === 0) return
+    if (activeCompactionOwner === "better-compact") {
+        /**
+         * Better Compact answers every compaction Oh My Pi decides to run — manual
+         * `/compact`, the pre-prompt and mid-turn thresholds, idle maintenance, and
+         * overflow recovery — and the native summarizer never runs.
+         *
+         * The host's durable shape is one summary string plus a contiguous tail, so
+         * the ladder's compacted prefix is serialized into that slot: user turns as
+         * written, dropped tool calls as one-line stubs, collapsed runs carrying the
+         * summaries paid for here, and a pointer to the raw transcript. The host then
+         * persists it, rebuilds context, rebases accounting and resets dependent
+         * state exactly as it would for its own summarizer.
+         *
+         * Returning nothing hands the run back to the native summarizer rather than
+         * leaving the session uncompacted.
+         */
+        pi.on("session_before_compact", async (event, ctx) => {
+            const trigger = pendingTrigger ?? "manual"
+            try {
+                if (!runtime.owns(ctx)) return
+                const contextLimit = ctx.model?.contextWindow
+                if (!contextLimit || contextLimit <= 0) return
+                const messages = buildSessionContext(event.branchEntries).messages
+                if (messages.length === 0) return
 
-            const turns = ompCodec.encode(messages)
-            const plan = await runtime.forcePlan(ctx, messages, contextLimit)
-            const decide = (candidate: typeof plan) =>
-                decideCompaction({
+                const turns = ompCodec.encode(messages)
+                const plan = await runtime.forcePlan(ctx, messages, contextLimit)
+                const decide = (candidate: typeof plan) =>
+                    decideCompaction({
+                        trigger,
+                        plan: candidate,
+                        turns,
+                        messages,
+                        branchEntries: event.branchEntries,
+                    })
+
+                // Gate before paying for summaries, then decide again on the plan
+                // that is actually committed so the boundary and the text agree.
+                const gate = decide(plan)
+                if (gate.kind === "decline" || !plan) {
+                    logger.warn("Better Compact declined this compaction", {
+                        trigger,
+                        reason: gate.kind === "decline" ? gate.reason : "no plan",
+                    })
+                    return
+                }
+
+                const inputs: BuildPlanInputs = {
+                    ...runtime.planInputs(ctx, contextLimit),
+                    force: true,
+                }
+                const deadline = AbortSignal.any([
+                    event.signal,
+                    AbortSignal.timeout(COMPACT_SUMMARY_DEADLINE_MS),
+                ])
+                const finalPlan = await runtime.summarizeNow(ctx, turns, inputs, plan, deadline)
+
+                const decision = decide(finalPlan)
+                if (decision.kind === "decline") {
+                    logger.warn("Better Compact declined this compaction after summarizing", {
+                        trigger,
+                        reason: decision.reason,
+                    })
+                    return
+                }
+
+                const summary = formatDurableCompaction(finalPlan, turns, ompSpec)
+                if (!summary) {
+                    logger.warn("Better Compact produced no durable context", { trigger })
+                    return
+                }
+
+                const reclaimed = Math.max(0, finalPlan.beforeTokens - finalPlan.afterPruneTokens)
+                runtime.clearWidget(ctx)
+                return {
+                    compaction: {
+                        summary,
+                        shortSummary: `Better Compact reclaimed ${formatTokens(reclaimed)} tokens by pruning older context.`,
+                        firstKeptEntryId: decision.firstKeptEntryId,
+                        tokensBefore: event.preparation.tokensBefore,
+                    },
+                }
+            } catch (error) {
+                logger.warn("Better Compact compaction failed; native compaction will run", {
                     trigger,
-                    plan: candidate,
-                    turns,
-                    messages,
-                    branchEntries: event.branchEntries,
+                    error: errorText(error),
                 })
-
-            // Gate before paying for summaries, then decide again on the plan
-            // that is actually committed so the boundary and the text agree.
-            const gate = decide(plan)
-            if (gate.kind === "decline" || !plan) {
-                logger.warn("Better Compact declined this compaction", {
-                    trigger,
-                    reason: gate.kind === "decline" ? gate.reason : "no plan",
-                })
-                return
             }
-
-            const inputs: BuildPlanInputs = {
-                ...runtime.planInputs(ctx, contextLimit),
-                force: true,
-            }
-            const deadline = AbortSignal.any([
-                event.signal,
-                AbortSignal.timeout(COMPACT_SUMMARY_DEADLINE_MS),
-            ])
-            const finalPlan = await runtime.summarizeNow(ctx, turns, inputs, plan, deadline)
-
-            const decision = decide(finalPlan)
-            if (decision.kind === "decline") {
-                logger.warn("Better Compact declined this compaction after summarizing", {
-                    trigger,
-                    reason: decision.reason,
-                })
-                return
-            }
-
-            const summary = formatDurableCompaction(finalPlan, turns, ompSpec)
-            if (!summary) {
-                logger.warn("Better Compact produced no durable context", { trigger })
-                return
-            }
-
-            const reclaimed = Math.max(0, finalPlan.beforeTokens - finalPlan.afterPruneTokens)
-            runtime.clearWidget(ctx)
-            return {
-                compaction: {
-                    summary,
-                    shortSummary: `Better Compact reclaimed ${formatTokens(reclaimed)} tokens by pruning older context.`,
-                    firstKeptEntryId: decision.firstKeptEntryId,
-                    tokensBefore: event.preparation.tokensBefore,
-                },
-            }
-        } catch (error) {
-            logger.warn("Better Compact compaction failed; native compaction will run", {
-                trigger,
-                error: errorText(error),
-            })
-        }
-    })
+        })
+    }
 
     pi.registerCommand("better-compact", {
         description: "Run the selected committed compaction now",
@@ -376,14 +326,18 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
             if (!result?.changed) return
             if (ownerChanged) {
                 await saveOmpCompactionOwner(ownerPath, result.compactionOwner)
-                strategyWarned = false
             }
-            await runtime.saveConfig(ctx, {
-                automatic: result.config.automatic,
-                preset: result.config.preset,
-                summaryEffort: result.config.summaryEffort,
-            })
-            warnUnreliableStrategy(ctx)
+            await runtime.saveConfig(
+                ctx,
+                {
+                    automatic: result.config.automatic,
+                    preset: result.config.preset,
+                    summaryEffort: result.config.summaryEffort,
+                },
+                ownerChanged
+                    ? `Settings saved. Committed compaction will use ${result.compactionOwner} in new sessions; restart OMP to apply it here.`
+                    : undefined,
+            )
         },
     })
 
@@ -400,10 +354,18 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
     })
 
     pi.registerCommand("better-compact-mode", {
-        description: "Choose Better Compact or OMP for committed compaction",
+        description: "Choose the committed compaction owner for new sessions",
         handler: async (args, ctx) => {
             if (!args.trim()) {
-                ctx.ui.notify(`Committed compaction: ${compactionOwner()}.`, "info")
+                const configuredOwner = await loadOmpCompactionOwner(ownerPath)
+                const suffix =
+                    configuredOwner === activeCompactionOwner
+                        ? ""
+                        : ` Configured for new sessions: ${configuredOwner}.`
+                ctx.ui.notify(
+                    `Active committed compaction: ${activeCompactionOwner}.${suffix}`,
+                    "info",
+                )
                 return
             }
             const owner = commandOmpCompactionOwner(args)
@@ -413,9 +375,10 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
             }
             try {
                 await saveOmpCompactionOwner(ownerPath, owner)
-                strategyWarned = false
-                ctx.ui.notify(`Committed compaction set to ${owner}.`, "info")
-                warnUnreliableStrategy(ctx)
+                ctx.ui.notify(
+                    `Committed compaction set to ${owner} for new sessions. Restart OMP to apply it here.`,
+                    "info",
+                )
             } catch (error) {
                 logger.warn("Better Compact mode update failed", {
                     error: errorText(error),

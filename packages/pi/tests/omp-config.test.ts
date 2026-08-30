@@ -6,9 +6,7 @@ import test from "node:test"
 import { updateConfigObject } from "../src/config"
 import {
     commandOmpCompactionOwner,
-    currentOmpCompactionOwner,
     loadOmpCompactionOwner,
-    resetOmpCompactionOwnerCache,
     saveOmpCompactionOwner,
 } from "../src/omp/config"
 test("missing or invalid owner defaults to Better Compact", async () => {
@@ -50,24 +48,7 @@ test("owner round-trips without dropping shared or unknown config", async () => 
     })
 })
 
-test("duplicate instances observe one shared owner state", async () => {
-    resetOmpCompactionOwnerCache()
-    const dir = await mkdtemp(join(tmpdir(), "better-compact-owner-"))
-    const path = join(dir, "better-compact.json")
-
-    await loadOmpCompactionOwner(path)
-    assert.equal(currentOmpCompactionOwner(path), "better-compact")
-
-    await saveOmpCompactionOwner(path, "omp")
-    assert.equal(
-        currentOmpCompactionOwner(path),
-        "omp",
-        "the active compaction hook must see a mode command handled by a duplicate instance",
-    )
-})
-
 test("concurrent owner and shared config updates preserve both writes", async () => {
-    resetOmpCompactionOwnerCache()
     const dir = await mkdtemp(join(tmpdir(), "better-compact-owner-"))
     const path = join(dir, "better-compact.json")
     await writeFile(path, JSON.stringify({ preset: "light" }))

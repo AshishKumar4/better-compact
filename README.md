@@ -96,7 +96,7 @@ better-compact claude --run
 | OMP               | `/better-compact-report`                        | Show the active plan                  |
 | OMP, pi, OpenCode | `/better-compact-settings`                      | Open settings                         |
 | OMP, pi           | `/better-compact-preset <light\|moderate\|max>` | Change the pruning preset             |
-| OMP               | `/better-compact-mode <better-compact\|omp>`    | Choose the committed compaction owner |
+| OMP               | `/better-compact-mode <better-compact\|omp>`    | Choose the owner for new sessions     |
 | OpenCode          | `/better-compact context`                       | Show context usage                    |
 | OpenCode          | `/better-compact stats`                         | Show the active plan                  |
 | Claude Code       | `/better-compact:compact`                       | Queue compaction for session exit     |
@@ -124,7 +124,7 @@ For pi and OMP, create `<agent-dir>/better-compact.json`:
 
 pi also reads a trusted project override from `.pi/better-compact.json`. OMP reads the global file only.
 
-On OMP, set `ompCompactionOwner` to `omp` to keep Better Compact request pruning while using OMP's selected native strategy. Set `automatic` to `false` as well for pure OMP behavior.
+On OMP, set `ompCompactionOwner` to `omp` and restart to keep Better Compact request pruning while restoring OMP's full `compaction.methodOrder` and async speculation. Set `automatic` to `false` as well for pure OMP behavior.
 
 OpenCode uses `~/.config/opencode/better-compact.jsonc` and `.opencode/better-compact.jsonc`. See [the OpenCode package README](packages/opencode/README.md) for its full schema.
 

@@ -46,15 +46,15 @@ Install the package through one source only. Do not combine a plugin install wit
 
 ## Commands
 
-| Command                                         | OMP | pi  | Action                                |
-| ----------------------------------------------- | :-: | :-: | ------------------------------------- |
-| `/better-compact`                               | yes | yes | Compact now                           |
-| `/better-compact-report`                        | yes | no  | Show the active plan                  |
-| `/better-compact-settings`                      | yes | yes | Open settings                         |
-| `/better-compact-preset <light\|moderate\|max>` | yes | yes | Change the pruning preset             |
-| `/better-compact-mode <better-compact\|omp>`    | yes | no  | Choose the committed compaction owner |
+| Command                                         | OMP | pi  | Action                            |
+| ----------------------------------------------- | :-: | :-: | --------------------------------- |
+| `/better-compact`                               | yes | yes | Compact now                       |
+| `/better-compact-report`                        | yes | no  | Show the active plan              |
+| `/better-compact-settings`                      | yes | yes | Open settings                     |
+| `/better-compact-preset <light\|moderate\|max>` | yes | yes | Change the pruning preset         |
+| `/better-compact-mode <better-compact\|omp>`    | yes | no  | Choose the owner for new sessions |
 
-OMP runs `/better-compact` through its normal compaction lifecycle. The selected owner decides which algorithm supplies the result. pi stores a plan that starts on the next request.
+OMP runs `/better-compact` through its normal compaction lifecycle. The active owner decides which algorithm supplies the result. Owner changes require an OMP restart. pi stores a plan that starts on the next request.
 
 ## Presets
 
@@ -90,30 +90,41 @@ Choose who supplies the durable compaction:
 /better-compact-mode omp
 ```
 
-| `automatic` | `ompCompactionOwner` | Result                                                                |
-| :---------: | -------------------- | --------------------------------------------------------------------- |
-|   `true`    | `better-compact`     | Better Compact prunes requests and supplies committed compaction      |
-|   `true`    | `omp`                | Better Compact prunes requests; OMP runs its selected native strategy |
-|   `false`   | `better-compact`     | No request pruning; Better Compact supplies committed compaction      |
-|   `false`   | `omp`                | Pure OMP behavior                                                     |
+Restart OMP after changing the owner. Native OMP speculation is enabled only when no `session_before_compact` extension hook is registered.
 
-### OMP native strategy
+| `automatic` | `ompCompactionOwner` | Result after restart                                             |
+| :---------: | -------------------- | ---------------------------------------------------------------- |
+|   `true`    | `better-compact`     | Better Compact prunes requests and supplies committed compaction |
+|   `true`    | `omp`                | Better Compact prunes requests; OMP runs its native method order |
+|   `false`   | `better-compact`     | No request pruning; Better Compact supplies committed compaction |
+|   `false`   | `omp`                | Pure OMP behavior, including async speculation                   |
 
-When `ompCompactionOwner` is `omp`, choose the native algorithm through OMP:
+### OMP native method order
+
+OMP 18 uses an ordered fallback list:
 
 ```bash
-omp config set compaction.strategy snapcompact
+omp config get compaction.methodOrder
+omp config set compaction.methodOrder '["remote","snapcompact","handoff","shake","soft"]'
 ```
 
-Available values:
+Methods run from left to right. Unavailable or failed methods advance to the next one.
 
-- `snapcompact`: archive old text as image frames;
-- `context-full`: summarize the old prefix with a model;
-- `shake`: elide large tool results and blocks, with artifact recovery;
-- `handoff`: generate a handoff and continue in a new session;
-- `off`: disable automatic compaction.
+| Method        | Action                                                          |
+| ------------- | --------------------------------------------------------------- |
+| `remote`      | Use provider-native OpenAI-compatible compaction when available |
+| `snapcompact` | Archive old text as image frames                                |
+| `handoff`     | Generate a handoff and continue from it                         |
+| `shake`       | Elide heavy tool results and blocks with artifact recovery      |
+| `soft`        | Summarize the old prefix with a compaction model                |
 
-When `ompCompactionOwner` is `better-compact`, `snapcompact` and `context-full` reach Better Compact directly. `shake` and `handoff` run first and use Better Compact only on fallback.
+Disable automatic compaction with:
+
+```bash
+omp config set compaction.enabled false
+```
+
+When `ompCompactionOwner` is `omp`, Better Compact registers no compaction hook. OMP keeps its full fallback order and async speculation. When the owner is `better-compact`, Better Compact supplies committed results; shake can still run before the hook when it appears earlier in the method order.
 
 ### pi native compaction
 
@@ -134,9 +145,9 @@ pi cannot accept a custom compaction result. Disable its native compaction if Be
 Better Compact can run at two independent points:
 
 1. The `context` hook applies a virtual pruning plan to outgoing requests when `automatic` is enabled.
-2. The `session_before_compact` hook supplies OMP's committed result when `ompCompactionOwner` is `better-compact`.
+2. The `session_before_compact` hook supplies OMP's committed result when the active startup owner is `better-compact`.
 
-Set `ompCompactionOwner` to `omp` to keep request pruning while using snapcompact, context-full, shake, or handoff for committed compaction.
+Set `ompCompactionOwner` to `omp` and restart to keep request pruning while restoring OMP's complete method order and async speculation.
 
 OMP keeps control of timing, retry, rollback, headroom checks, continuation, and provider history.
 
@@ -148,7 +159,7 @@ When Better Compact owns committed compaction, the result contains:
 - a reference to the raw transcript on disk;
 - the recent tail unchanged.
 
-OMP uses its native result when it owns compaction or when Better Compact cannot produce a valid whole-turn boundary.
+OMP uses its native methods when it owns compaction or when Better Compact cannot produce a valid whole-turn boundary.
 
 ### pi
 
