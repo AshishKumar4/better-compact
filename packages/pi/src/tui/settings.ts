@@ -1,5 +1,5 @@
 import type { CompactionConfig, CompactionPreset, SummaryEffort } from "@better-compact/core"
-import type { HostSettingsUi } from "./host"
+import type { HostSettingsItem, HostSettingsUi } from "./host"
 
 const PRESETS: CompactionPreset[] = ["light", "moderate", "max"]
 const EFFORTS: SummaryEffort[] = ["inherit", "low", "medium", "high", "max"]
@@ -16,6 +16,11 @@ export interface SettingsResult {
     config: CompactionConfig
 }
 
+/** Host-specific row appended to the shared settings panel. */
+export interface AdditionalSetting extends HostSettingsItem {
+    onChange(value: string): void
+}
+
 // The host ships the SettingsList widget and its theme, so the panel matches
 // every other settings surface in that host instead of inventing a look. Each
 // entrypoint injects them from its own package scope.
@@ -23,15 +28,16 @@ export function createSettingsComponent<TComponent>(
     ui: HostSettingsUi<TComponent>,
     current: CompactionConfig,
     done: (result: SettingsResult) => void,
+    additional: AdditionalSetting[] = [],
 ): TComponent {
     let config: CompactionConfig = { ...current }
     let changed = false
 
-    const items = [
+    const items: HostSettingsItem[] = [
         {
             id: "automatic",
-            label: "Automatic compaction",
-            description: "Prune automatically when the session crosses the trigger.",
+            label: "Automatic pruning",
+            description: "Apply Better Compact to outgoing requests after the trigger.",
             currentValue: config.automatic ? "on" : "off",
             values: AUTOMATIC,
         },
@@ -50,6 +56,7 @@ export function createSettingsComponent<TComponent>(
             currentValue: config.summaryEffort,
             values: EFFORTS,
         },
+        ...additional.map(({ onChange: _onChange, ...item }) => item),
     ]
 
     return ui.createSettingsList(
@@ -61,6 +68,7 @@ export function createSettingsComponent<TComponent>(
             else if (id === "preset") config = { ...config, preset: value as CompactionPreset }
             else if (id === "summaryEffort")
                 config = { ...config, summaryEffort: value as SummaryEffort }
+            else additional.find((item) => item.id === id)?.onChange(value)
         },
         () => done({ changed, config }),
     )

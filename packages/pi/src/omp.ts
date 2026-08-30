@@ -12,6 +12,15 @@ import { SettingsList } from "@oh-my-pi/pi-tui"
 import { commandPreset, CONFIG_FILE, errorText } from "./config"
 import { ompCodec, ompSpec } from "./omp/codec"
 import { decideCompaction, formatDurableCompaction, type CompactionTrigger } from "./omp/compaction"
+import {
+    commandOmpCompactionOwner,
+    currentOmpCompactionOwner,
+    isOmpCompactionOwner,
+    loadOmpCompactionOwner,
+    OMP_COMPACTION_OWNERS,
+    saveOmpCompactionOwner,
+    type OmpCompactionOwner,
+} from "./omp/config"
 import type { OmpAgentMessage } from "./omp/host"
 import { createOmpSummarizer } from "./omp/summarizer"
 import { createRuntime, type RuntimeHost } from "./runtime"
@@ -103,6 +112,8 @@ function createOmpHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, OmpAgent
 
 export default function betterCompactOmp(pi: ExtensionAPI) {
     const runtime = createRuntime(createOmpHost(pi))
+    const ownerPath = join(getAgentDir(), CONFIG_FILE)
+    const compactionOwner = () => currentOmpCompactionOwner(ownerPath)
     let strategyWarned = false
     /**
      * The reason Oh My Pi is compacting. `auto_compaction_start` fires before
@@ -110,6 +121,14 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
      * the manual `/compact` path.
      */
     let pendingTrigger: CompactionTrigger | undefined
+
+    const ompStrategy = (): string | undefined => {
+        try {
+            return ompSettings.get("compaction.strategy")
+        } catch {
+            return undefined
+        }
+    }
 
     /**
      * Oh My Pi routes `handoff` and `shake` to their own paths first and `off`
@@ -122,13 +141,8 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
      * rehydration fails.
      */
     const warnUnreliableStrategy = (ctx: ExtensionContext): void => {
-        if (strategyWarned) return
-        let strategy: string | undefined
-        try {
-            strategy = ompSettings.get("compaction.strategy")
-        } catch {
-            return
-        }
+        if (compactionOwner() === "omp" || strategyWarned) return
+        const strategy = ompStrategy()
         const reason = strategy === undefined ? undefined : UNRELIABLE_STRATEGIES[strategy]
         if (!reason) return
         strategyWarned = true
@@ -149,6 +163,7 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         if (!runtime.owns(ctx)) return
         pendingTrigger = undefined
         await runtime.rehydrate(ctx)
+        await loadOmpCompactionOwner(ownerPath)
         warnUnreliableStrategy(ctx)
     }
 
@@ -195,7 +210,7 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
     pi.on("session_before_compact", async (event, ctx) => {
         const trigger = pendingTrigger ?? "manual"
         try {
-            if (!runtime.owns(ctx)) return
+            if (!runtime.owns(ctx) || compactionOwner() === "omp") return
             const contextLimit = ctx.model?.contextWindow
             if (!contextLimit || contextLimit <= 0) return
             const messages = buildSessionContext(event.branchEntries).messages
@@ -267,7 +282,7 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
     })
 
     pi.registerCommand("better-compact", {
-        description: "Compact this session now (Better Compact)",
+        description: "Run the selected committed compaction now",
         handler: async (_args, ctx) => {
             if (!ctx.model) {
                 ctx.ui.notify("Better Compact: no active model context window.", "warning")
@@ -322,22 +337,53 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
         handler: async (_args, ctx) => {
             if (!ctx.hasUI || ctx.mode !== "tui") {
                 ctx.ui.notify(
-                    "Better Compact settings need the interactive TUI; use /better-compact-preset here.",
+                    "Better Compact settings need the interactive TUI; use /better-compact-preset or /better-compact-mode here.",
                     "warning",
                 )
                 return
             }
-            const result = await ctx.ui.custom<{ changed: boolean; config: CompactionConfig }>(
+            const openedOwner = await loadOmpCompactionOwner(ownerPath)
+            let nextOwner = openedOwner
+            let ownerChanged = false
+            const result = await ctx.ui.custom<{
+                changed: boolean
+                config: CompactionConfig
+                compactionOwner: OmpCompactionOwner
+            }>(
                 (_tui, _theme, _keybindings, done) =>
-                    createSettingsComponent(settingsUi, runtime.config, done),
+                    createSettingsComponent(
+                        settingsUi,
+                        runtime.config,
+                        (settingsResult) => done({ ...settingsResult, compactionOwner: nextOwner }),
+                        [
+                            {
+                                id: "ompCompactionOwner",
+                                label: "Committed compaction",
+                                description:
+                                    "Choose Better Compact or the OMP strategy for durable compaction.",
+                                currentValue: openedOwner,
+                                values: [...OMP_COMPACTION_OWNERS],
+                                onChange: (value) => {
+                                    if (!isOmpCompactionOwner(value)) return
+                                    nextOwner = value
+                                    ownerChanged = nextOwner !== openedOwner
+                                },
+                            },
+                        ],
+                    ),
                 { overlay: true },
             )
             if (!result?.changed) return
+            if (ownerChanged) {
+                await saveOmpCompactionOwner(ownerPath, result.compactionOwner)
+                strategyWarned = false
+            }
             await runtime.saveConfig(ctx, {
                 automatic: result.config.automatic,
                 preset: result.config.preset,
                 summaryEffort: result.config.summaryEffort,
             })
+            warnUnreliableStrategy(ctx)
         },
     })
 
@@ -350,6 +396,32 @@ export default function betterCompactOmp(pi: ExtensionAPI) {
                 return
             }
             await runtime.saveConfig(ctx, { preset }, `Better Compact preset set to ${preset}.`)
+        },
+    })
+
+    pi.registerCommand("better-compact-mode", {
+        description: "Choose Better Compact or OMP for committed compaction",
+        handler: async (args, ctx) => {
+            if (!args.trim()) {
+                ctx.ui.notify(`Committed compaction: ${compactionOwner()}.`, "info")
+                return
+            }
+            const owner = commandOmpCompactionOwner(args)
+            if (!owner) {
+                ctx.ui.notify("Usage: /better-compact-mode <better-compact|omp>", "warning")
+                return
+            }
+            try {
+                await saveOmpCompactionOwner(ownerPath, owner)
+                strategyWarned = false
+                ctx.ui.notify(`Committed compaction set to ${owner}.`, "info")
+                warnUnreliableStrategy(ctx)
+            } catch (error) {
+                logger.warn("Better Compact mode update failed", {
+                    error: errorText(error),
+                })
+                ctx.ui.notify("Better Compact could not save the compaction mode.", "warning")
+            }
         },
     })
 }

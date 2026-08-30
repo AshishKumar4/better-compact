@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import {
     DEFAULT_CUSTOM_COMPACTION,
     normalizeCompactionCustom,
@@ -78,6 +79,64 @@ export async function writeConfigObject(
     } catch (error) {
         await rm(temporary, { force: true })
         throw error
+    }
+}
+
+const CONFIG_LOCK_TIMEOUT_MS = 5_000
+const CONFIG_LOCK_STALE_MS = 30_000
+const CONFIG_LOCK_RETRY_MS = 25
+
+/**
+ * Merge fields into a config under one cross-process lock.
+ *
+ * Better Compact settings and the OMP owner share one file. Without a lock,
+ * concurrent sessions can both read the same old object and the later rename
+ * silently drops the other session's update.
+ */
+export async function updateConfigObject(
+    path: string,
+    patch: Record<string, unknown>,
+): Promise<void> {
+    await mkdir(dirname(path), { recursive: true })
+    const lockPath = `${path}.lock`
+    const deadline = Date.now() + CONFIG_LOCK_TIMEOUT_MS
+
+    let lock
+    while (!lock) {
+        try {
+            lock = await open(lockPath, "wx", 0o600)
+        } catch (error) {
+            if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") {
+                throw error
+            }
+            try {
+                const lockStat = await stat(lockPath)
+                if (Date.now() - lockStat.mtimeMs > CONFIG_LOCK_STALE_MS) {
+                    await rm(lockPath, { force: true })
+                    continue
+                }
+            } catch (statError) {
+                if (
+                    !(statError instanceof Error) ||
+                    !("code" in statError) ||
+                    statError.code !== "ENOENT"
+                ) {
+                    throw statError
+                }
+            }
+            if (Date.now() >= deadline) {
+                throw new Error(`timed out waiting for Better Compact config lock: ${lockPath}`)
+            }
+            await delay(CONFIG_LOCK_RETRY_MS)
+        }
+    }
+
+    try {
+        const current = (await readConfigObject(path)) ?? {}
+        await writeConfigObject(path, { ...current, ...patch })
+    } finally {
+        await lock.close()
+        await rm(lockPath, { force: true })
     }
 }
 
