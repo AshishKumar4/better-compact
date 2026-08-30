@@ -35,7 +35,7 @@ Better Compact reduces context in stages. It removes stale tool traffic and old 
 
 ### Oh My Pi
 
-Requires `@better-compact/pi` 0.3.0 or newer.
+Requires `@better-compact/pi` 0.3.1 or newer.
 
 ```bash
 omp plugin install @better-compact/pi
@@ -89,15 +89,17 @@ better-compact claude --run
 
 ## Commands
 
-| Platform          | Command                                         | Action                            |
-| ----------------- | ----------------------------------------------- | --------------------------------- |
-| OMP, pi, OpenCode | `/better-compact`                               | Run Better Compact now            |
-| OMP               | `/better-compact-report`                        | Show the active plan              |
-| OMP, pi, OpenCode | `/better-compact-settings`                      | Open settings                     |
-| OMP, pi           | `/better-compact-preset <light\|moderate\|max>` | Change the preset                 |
-| OpenCode          | `/better-compact context`                       | Show context usage                |
-| OpenCode          | `/better-compact stats`                         | Show the active plan              |
-| Claude Code       | `/better-compact:compact`                       | Queue compaction for session exit |
+| Platform          | Command                                         | Action                                |
+| ----------------- | ----------------------------------------------- | ------------------------------------- |
+| OMP               | `/better-compact`                               | Run the selected committed compaction |
+| pi, OpenCode      | `/better-compact`                               | Run Better Compact now                |
+| OMP               | `/better-compact-report`                        | Show the active plan                  |
+| OMP, pi, OpenCode | `/better-compact-settings`                      | Open settings                         |
+| OMP, pi           | `/better-compact-preset <light\|moderate\|max>` | Change the pruning preset             |
+| OMP               | `/better-compact-mode <better-compact\|omp>`    | Choose the committed compaction owner |
+| OpenCode          | `/better-compact context`                       | Show context usage                    |
+| OpenCode          | `/better-compact stats`                         | Show the active plan                  |
+| Claude Code       | `/better-compact:compact`                       | Queue compaction for session exit     |
 
 ## Presets
 
@@ -115,11 +117,14 @@ For pi and OMP, create `<agent-dir>/better-compact.json`:
 {
     "automatic": true,
     "preset": "moderate",
-    "summaryEffort": "inherit"
+    "summaryEffort": "inherit",
+    "ompCompactionOwner": "better-compact"
 }
 ```
 
 pi also reads a trusted project override from `.pi/better-compact.json`. OMP reads the global file only.
+
+On OMP, set `ompCompactionOwner` to `omp` to keep Better Compact request pruning while using OMP's selected native strategy. Set `automatic` to `false` as well for pure OMP behavior.
 
 OpenCode uses `~/.config/opencode/better-compact.jsonc` and `.opencode/better-compact.jsonc`. See [the OpenCode package README](packages/opencode/README.md) for its full schema.
 

@@ -22,8 +22,7 @@ import {
     errorText,
     loadCompactionConfig,
     mergeCompactionConfig,
-    readConfigObject,
-    writeConfigObject,
+    updateConfigObject,
 } from "./config"
 import { createPlanStore, type BranchReader, type PiPlanStore } from "./plan-store"
 import { createTranscriptStore } from "./transcripts"
@@ -324,8 +323,7 @@ export function createRuntime<TCtx, TNative>(
         async saveConfig(ctx, patch, savedMessage = "Better Compact settings saved.") {
             const path = host.configPaths(ctx).global
             try {
-                const current = (await readConfigObject(path)) ?? {}
-                await writeConfigObject(path, { ...current, ...patch })
+                await updateConfigObject(path, patch)
                 config = mergeCompactionConfig(config, patch)
                 profile = resolveCompactionProfile({ compaction: config })
                 host.ui(ctx).notify(savedMessage, "info")

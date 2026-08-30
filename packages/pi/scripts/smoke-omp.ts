@@ -17,16 +17,20 @@ import assert from "node:assert/strict"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildSessionContext, VERSION } from "@oh-my-pi/pi-coding-agent"
 
 /** Shape of the built artifact under test. */
 interface ExtensionFactory {
     default: (api: unknown) => void
 }
 
+interface RegisteredCommand {
+    description?: string
+    handler: (args: string, ctx: unknown) => Promise<void> | void
+}
+
 interface Recorded {
     handlers: Map<string, (event: unknown, ctx: unknown) => unknown>
-    commands: Map<string, { description?: string; handler: unknown }>
+    commands: Map<string, RegisteredCommand>
     entries: Array<{ customType: string; data: unknown }>
     notices: string[]
 }
@@ -36,11 +40,16 @@ function label(step: string): void {
 }
 
 async function main(): Promise<void> {
-    process.stdout.write(`Oh My Pi ${VERSION}\n`)
+    const sessionDir = await mkdtemp(join(tmpdir(), "better-compact-omp-smoke-"))
+    const agentDir = await mkdtemp(join(tmpdir(), "better-compact-omp-agent-"))
+    process.env.OMP_AGENT_DIR = agentDir
+    process.env.PI_CODING_AGENT_DIR = agentDir
 
-    // Dynamic on purpose: loading the built artifact is exactly what this smoke
-    // proves, and `dist/omp.js` does not exist until `pnpm build` has run.
+    // Dynamic on purpose: OMP snapshots the agent directory when its package
+    // loads, and loading the built artifact is what this smoke proves.
+    const { buildSessionContext, VERSION } = await import("@oh-my-pi/pi-coding-agent")
     const factory = (await import("../dist/omp.js")) as ExtensionFactory
+    process.stdout.write(`Oh My Pi ${VERSION}\n`)
 
     const recorded: Recorded = {
         handlers: new Map(),
@@ -48,11 +57,6 @@ async function main(): Promise<void> {
         entries: [],
         notices: [],
     }
-
-    const sessionDir = await mkdtemp(join(tmpdir(), "better-compact-omp-smoke-"))
-    const agentDir = await mkdtemp(join(tmpdir(), "better-compact-omp-agent-"))
-    process.env.OMP_AGENT_DIR = agentDir
-    process.env.PI_CODING_AGENT_DIR = agentDir
 
     // The over-trigger conversation: tool-heavy assistant turns with thinking,
     // then a short raw tail — enough history to cross an 8k window's trigger.
@@ -86,7 +90,7 @@ async function main(): Promise<void> {
         on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
             recorded.handlers.set(event, handler)
         },
-        registerCommand: (name: string, options: { description?: string; handler: unknown }) => {
+        registerCommand: (name: string, options: RegisteredCommand) => {
             recorded.commands.set(name, options)
         },
         appendEntry: (customType: string, data: unknown) => {
@@ -114,6 +118,7 @@ async function main(): Promise<void> {
         "better-compact-report",
         "better-compact-settings",
         "better-compact-preset",
+        "better-compact-mode",
     ]) {
         assert.ok(recorded.commands.has(command), `missing command: /${command}`)
     }
@@ -132,7 +137,7 @@ async function main(): Promise<void> {
         on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
             duplicate.handlers.set(event, handler)
         },
-        registerCommand: (name: string, options: { description?: string; handler: unknown }) => {
+        registerCommand: (name: string, options: RegisteredCommand) => {
             duplicate.commands.set(name, options)
         },
         appendEntry: (customType: string, data: unknown) => {
@@ -214,6 +219,35 @@ async function main(): Promise<void> {
         })
     }
     label("every automatic trigger committed a Better Compact compaction")
+
+    const modeCommand = duplicate.commands.get("better-compact-mode")
+    assert.ok(modeCommand, "the duplicate instance owns the last-registered command name")
+    await modeCommand.handler("omp", ctx)
+    for (const action of ["context-full", "snapcompact", "shake", "handoff"] as const) {
+        await call("auto_compaction_start", { reason: "threshold", action })
+        const nativeOwned = await call("session_before_compact", compactEvent)
+        assert.equal(
+            nativeOwned,
+            undefined,
+            `OMP ownership must leave ${action} unanswered so the native strategy runs`,
+        )
+    }
+    const transformedWithNativeOwner = (await call("context", { messages })) as
+        { messages?: unknown[] } | undefined
+    assert.ok(
+        transformedWithNativeOwner?.messages,
+        "request pruning stays active when OMP owns committed compaction",
+    )
+    label("OMP ownership ran the native strategy while request pruning stayed active")
+
+    await modeCommand.handler("better-compact", ctx)
+    const betterOwned = (await call("session_before_compact", compactEvent)) as
+        { compaction?: unknown } | undefined
+    assert.ok(
+        betterOwned?.compaction,
+        "Better Compact ownership must supply the committed compaction",
+    )
+    label("Better Compact ownership resumed without restarting the session")
 
     await call("auto_compaction_start", { reason: "overflow", action: "context-full" })
     const recovery = (await call("session_before_compact", compactEvent)) as
