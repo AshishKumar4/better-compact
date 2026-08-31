@@ -7,49 +7,45 @@
 
 There is no controlled, public benchmark that compares OMP `remote`, `snapcompact`, `handoff`, `shake`, and `soft` against Better Compact at the same post-compaction token budget on long-running coding tasks. A universal winner is not supported by evidence.
 
-The strongest conclusions are narrower:
+The strongest conclusions under a **session-continuity** definition are:
 
-1. **Use reversible reduction before irreversible summarization.** `shake` preserves selected text exactly in artifacts when the write succeeds. Better Compact writes a rendered reference transcript, but caps large tool inputs and outputs and replaces images with placeholders. Both remove detail from active context, so recovery still depends on a tool read.
-2. **Snapcompact is not lossless.** It is literal text rendered into images, but the source is normalized, tool payloads are bounded before rendering, old middle content can be dropped at the frame cap, and the model must read dense text from pixels.
-3. **Structured task state beats generic recap as a design target.** Agent studies such as Acon and Context as a Tool show that task-aware compression can beat static or generic compression in their evaluated environments. They do not test OMP or Better Compact directly.
-4. **Remote compaction cannot be audited.** OpenAI calls the item encrypted, opaque, and not human-interpretable. No public source states what it preserves, its compression ratio, or its coding-task accuracy.
-5. **Better Compact is the strongest general candidate, not the proven winner.** Its staged pruning, action stubs, raw tail, todo retention, replay stability, and transcript reference are well suited to coding sessions. Its recall and task-continuation quality have not been measured against OMP's methods.
+1. **Preserve trajectory state, not a fact list.** A compacted agent needs to know what it tried, what changed, why decisions were made, where execution currently stands, and what remains. A flat list of facts can still cause repeated work and false continuation.
+2. **Distill old reasoning; do not blindly retain or delete it.** Keep recent reasoning raw. Convert older reasoning into decisions, rejected hypotheses, failure causes, unresolved uncertainty, and next actions before removing the token-level trace.
+3. **Structured task state is the best-supported design target.** Agent studies such as TRACE, SWE-AGILE, Acon, and Context as a Tool favor trajectory-aware state or reasoning digests over static threshold summaries in their evaluated environments. They do not test OMP or Better Compact directly.
+4. **Snapcompact is a serious complementary candidate.** It can preserve much broader chronological surface history than a short summary, and AgentOCR provides external evidence that optical history can retain agent performance in other environments. It still depends on OCR, model-specific billing, and bounded frames.
+5. **No native OMP method is a proven replacement.** `handoff` is the native method most directly designed for coherent task continuation. `remote` may preserve OpenAI-native reasoning better than text methods, but it is opaque. `soft` is a conventional lossy fallback. `shake` removes noise but does not preserve the causal task story.
+6. **Better Compact is promising but currently deletes reasoning too early.** Its OMP ladder removes old reasoning before assistant-run summaries are produced, so decisions or failed hypotheses stated only in thinking never reach those summaries.
 
-The best-supported architecture is therefore a **hybrid**:
+The best-supported architecture is a hybrid:
 
-1. remove known redundant or recoverable observations;
-2. retain a structured task-state ledger and recent raw tail;
-3. preserve exact removed evidence behind indexed references;
-4. summarize only what still exceeds the budget;
-5. choose summary content using the current task goal and measured failure feedback.
+1. retain a typed task-state ledger and recent raw interaction/reasoning window;
+2. distill older reasoning into causal decisions, failures, beliefs, and next actions;
+3. remove redundant tool traffic and stale observations;
+4. preserve broad older narrative context through selective text or image archival;
+5. summarize only what still exceeds the budget;
+6. choose retained content using the current task goal and paired continuation failures.
 
-Better Compact implements part 1 and pieces of parts 2–4. Its reference transcript is not an exact raw archive. It does not yet have a benchmark, typed task ledger, goal-aware selection, source-linked facts, or failure-trained compression guidelines.
+Better Compact implements part of this structure, but not the reasoning digest or typed ledger. Its current reference document is also a capped preview rather than an exact raw archive.
 
 ## What “least lossy” means
 
-A compactor can appear lossless while moving information out of the model's immediate reach. This report separates two measurements.
+The primary target in this report is **continuity fidelity**:
 
-### Active-context fidelity
+> After compaction, the agent should behave like the same agent continuing the same evolving task, not a new agent handed a shallow recap.
 
-What the model can use in the next response without another tool call:
+This requires:
 
-- factual and constraint recall;
-- exact paths, symbols, IDs, error text, and command output;
-- current plan and repository state;
-- failed attempts and their causes;
-- chronology and causal links.
+- goals and non-negotiable constraints;
+- current execution position and next action;
+- completed, pending, and partially completed work;
+- decisions and why they were made;
+- failed approaches and why they failed;
+- current beliefs and unresolved uncertainty;
+- repository state, tests, errors, paths, and symbols;
+- enough chronology to understand how the task evolved;
+- a recent raw interaction and reasoning window.
 
-### Recoverable fidelity
-
-What remains available outside active context:
-
-- OMP `artifact://` files;
-- Better Compact transcripts;
-- snapcompact's retained archive source and frames;
-- the original session log;
-- opaque provider compaction state.
-
-Recoverability is not free. It adds tool calls, latency, prompt tokens, and a decision burden: the model must know that missing evidence exists and choose the correct reference.
+Exact external recovery is secondary under this definition. It remains useful for audits and targeted re-reading, but a session is not coherent if the agent must rediscover its own state through artifacts after every compaction.
 
 ### Evidence grades
 
@@ -307,6 +303,7 @@ The implementation is in [`ladder.ts`](https://github.com/AshishKumar4/Better-Co
 - **The reference is not a raw transcript:** long tool payload tails and image contents are unavailable from Better Compact's document. OMP's original session log remains the only raw source. **Grade C.**
 - **Stubs omit most output:** exact values beyond the target/status/error line require retrieval. **Grade C.**
 - **Run and prefix summaries can hallucinate or omit state:** validation checks shape, not factual agreement with source. **Grade C.**
+- **Old reasoning is deleted before it can be summarized:** the OMP ladder runs `reasoningStage` before `assistantRunsStage`. When that stage is needed, the later summary prompt receives turns with reasoning already removed. Decisions, discarded hypotheses, and causal explanations stated only in thinking can disappear. **Grade C mechanism; Grade E continuity impact pending measurement.**
 - **Target estimates are approximate:** chars/4 plus provider-overhead calibration is not the provider tokenizer. **Grade C.**
 - **Whole-turn OMP boundary:** Better Compact hands the method back when its internal boundary splits a turn, because OMP cannot persist that shape. **Grade C.**
 - **No quality benchmark:** the repository tests replay, shape, boundaries, and invariants, not factual recall or task completion after compaction. **Grade C.**
@@ -345,120 +342,113 @@ General long-running coding sessions where staged degradation, task-state visibi
 
 ## What external research adds
 
+### Trajectory continuity is more than retained facts
+
+[TRACE](https://arxiv.org/abs/2608.06503) reports that recurrent compression can weaken the influence of recent interactions, causing blocked actions, repeated exploration, and run-to-run instability. Its key observation matches the continuity criterion here: an ordered action–observation history tells the agent what is already done and where it currently stands. A declarative summary can retain entities and progress labels while still flattening that direction. TRACE evaluates candidate summaries through paired closed-loop continuations from the same environment state. Its experiments are on AppWorld, not coding agents.
+
+[SWE-AGILE](https://arxiv.org/abs/2604.11716) addresses reasoning history directly. It keeps a recent sliding window of raw chain-of-thought and replaces older reasoning with concise reasoning digests. The paper argues that keeping every old trace causes context growth and attention dilution, while deleting all old traces forces redundant re-reasoning. It reports a 24.1% SWE-bench Verified result for its trained 8B framework. This does not establish the right window or digest for frontier API models, but it supports **distill-then-prune** over unconditional deletion.
+
+### Optical history is viable, but not yet proven for coding
+
+[AgentOCR](https://arxiv.org/abs/2601.04786) renders accumulated action–observation history as images. On ALFWorld and search-based QA, it reports retaining over 95% of its text-agent task performance while reducing token consumption by over 50%, with up to 80% lower peak tokens. AgentOCR uses a trained optical/self-compression setup and does not test source-code exactness or OMP snapcompact. It provides real evidence that image history can support agent continuity, not evidence that OMP's pixel grids are best.
+
 ### Long context itself is not a lossless baseline
 
-[Lost in the Middle](https://aclanthology.org/2024.tacl-1.9/) found that model performance changes with the position of relevant information in long contexts. [RULER](https://arxiv.org/abs/2404.06654) found that models with strong needle-in-a-haystack scores can still degrade on multi-hop tracing, aggregation, and QA as context grows. These studies do not test coding-agent compaction, but they show why “keep everything” is not automatically best.
+[Lost in the Middle](https://aclanthology.org/2024.tacl-1.9/) found that model performance changes with the position of relevant information in long contexts. [RULER](https://arxiv.org/abs/2404.06654) found that models with strong needle-in-a-haystack scores can still degrade on multi-hop tracing, aggregation, and QA as context grows. These studies do not test coding-agent compaction, but they show why keeping every old reasoning token is not automatically best.
 
 ### Task-aware compression can beat static compression
 
 [LongLLMLingua](https://arxiv.org/abs/2310.06839) improved results in its long-context QA settings by selecting content relative to the current question and allocating budget by relevance. Its tasks are not agent trajectories, but the result supports goal-aware selection over fixed age-only rules.
 
-[Acon](https://arxiv.org/abs/2510.00615) optimized compression guidelines from cases where the uncompressed agent succeeded and the compressed agent failed. Across AppWorld, OfficeBench, and multi-objective QA, it reported 26–54% lower peak token use while improving task success over its compression baselines. It also states the key limitation directly: a compressor has no guarantee that its learned notion of salience retains the state needed later.
+[Acon](https://arxiv.org/abs/2510.00615) optimized compression guidelines from cases where the uncompressed agent succeeded and the compressed agent failed. Across AppWorld, OfficeBench, and multi-objective QA, it reported 26–54% lower peak token use while improving task success over its compression baselines.
 
-[Context as a Tool](https://arxiv.org/abs/2512.22087) trained an agent to choose when to fold context into a stable task segment, long-term memory, and recent working memory. On SWE-bench Verified, its reported pass rate was 57.6%, compared with 53.8% for its threshold-compression baseline at 500 steps. This compares trained policies in that paper, not Better Compact or OMP.
+[Context as a Tool](https://arxiv.org/abs/2512.22087) trained an agent to choose when to fold context into a stable task segment, long-term memory, and recent working memory. On SWE-bench Verified, its reported pass rate was 57.6%, compared with 53.8% for its threshold-compression baseline at 500 steps.
 
-[SWE-Pruner](https://arxiv.org/abs/2601.16746) reported 23–54% token reduction on coding-agent tasks while maintaining or improving task results. It uses current-goal-conditioned line selection, again supporting task-aware relevance. It does not compress complete agent histories in the same form as OMP.
+[SWE-Pruner](https://arxiv.org/abs/2601.16746) reported 23–54% token reduction on coding-agent tasks while maintaining or improving task results. It uses current-goal-conditioned line selection rather than complete trajectory compaction.
 
 ### Compression evaluation needs more than downstream score
 
-[Understanding and Improving Information Preservation in Prompt Compression](https://arxiv.org/abs/2503.19114) found 3–55% relative task losses across its tested compression methods and tasks. It separately measured downstream accuracy, grounding, and reconstructed information. That separation is useful here: a method can complete some tasks while losing exact entities or producing ungrounded claims.
+[Understanding and Improving Information Preservation in Prompt Compression](https://arxiv.org/abs/2503.19114) found 3–55% relative task losses across its tested compression methods and tasks. It separately measured downstream accuracy, grounding, and reconstructed information. A continuity benchmark must add execution position, repeated work, and causal-state survival to those measures.
 
-## Provisional ranking by use case
+## Provisional ranking for continuity
 
-This ranking is a mechanism-based recommendation, not a benchmark result.
+This is a mechanism-based assessment, not a benchmark result.
 
-| Need                                                   | Best current candidate | Reason                                                               |
-| ------------------------------------------------------ | ---------------------- | -------------------------------------------------------------------- |
-| Remove old logs while keeping exact recovery           | `shake`                | deterministic artifact-backed elision                                |
-| Preserve broad surface history without a summary model | snapcompact            | high character coverage, subject to OCR and frame loss               |
-| Preserve OpenAI-native hidden reasoning state          | `remote`               | only method designed for provider-native encrypted state             |
-| Produce a portable compact text fallback               | `soft`                 | works across text models and providers                               |
-| Mark a deliberate phase boundary with next actions     | `handoff`              | successor-oriented schema                                            |
-| General coding-session continuity                      | Better Compact         | staged loss, action stubs, task state, raw tail, transcript recovery |
+| Need                                   | Best current candidate | Limitation                                                 |
+| -------------------------------------- | ---------------------- | ---------------------------------------------------------- |
+| Purpose-built native task continuation | OMP `handoff`          | generated and unverified; no matched comparison            |
+| Broad chronological surface memory     | snapcompact            | OCR, normalization, frame truncation, and model dependence |
+| OpenAI-native reasoning continuity     | `remote`               | opaque; no public fidelity evidence                        |
+| General staged coding context          | Better Compact         | old reasoning deleted before summaries; no typed ledger    |
+| Portable fallback                      | `soft`                 | one generated semantic bottleneck                          |
+| Noise removal                          | `shake`                | removes content but does not preserve task evolution       |
 
-**No candidate is proven best at equal compression.**
+No candidate is proven best at equal compression. The evidence does not justify changing the default to one native OMP method today.
 
-## Most defensible configuration today
+### What is worth borrowing now
 
-For Better Compact users on OMP, the most defensible unmeasured hybrid is:
+- Borrow `handoff`'s successor-oriented state schema for Better Compact's persistent task ledger.
+- Borrow SWE-AGILE's raw-recent-reasoning plus old-reasoning-digest structure.
+- Prototype snapcompact as a selective, model-gated stage before the final prefix summary.
+- Keep `remote` as a benchmark arm for OpenAI models; do not trust an opaque item by assumption.
+- Keep OMP's ordered fallback and speculation orchestration; Better Compact should become a registered OMP method instead of replacing the pipeline through a global hook.
 
-```text
-/better-compact-mode better-compact
-```
-
-```bash
-omp config set compaction.methodOrder '["shake","soft"]'
-```
-
-After restart:
-
-1. OMP tries reversible `shake` first.
-2. If shake creates enough headroom, no generated summary is needed.
-3. If shake cannot reach the recovery band, OMP advances to `soft`.
-4. Better Compact's hook intercepts that summary path and supplies its staged result.
-
-This order follows the reversible-before-lossy principle. It has not been benchmarked and should not become the default until it is.
+Do not enable a shake-first order merely because its removals are externally recoverable. That optimizes a different objective from session continuity.
 
 ## How Better Compact should evolve
 
-### 1. Store lossless sources and add per-item anchors
+### 1. Distill reasoning before pruning it
 
-The pi/OMP reference document is a preview, not a raw transcript: tool payloads are capped and images are elided. Store native removed items losslessly in private artifacts. Each tool stub, summary section, decision, and todo should carry a stable source range or artifact region. Recovery should be one targeted read, not a transcript search.
+Replace the current unconditional reasoning stage with two layers:
+
+- a recent raw reasoning window;
+- an older reasoning digest containing decisions, rejected hypotheses, failure causes, changed beliefs, uncertainty, and next actions.
+
+Generate the digest from the original turns before reasoning blocks are removed. Do not feed raw old reasoning back forever.
 
 ### 2. Maintain a typed task-state ledger
 
 Keep these fields separately from narrative summaries:
 
 - user goal and non-negotiable constraints;
-- current plan and next action;
-- completed and pending work;
+- current execution position and next action;
+- completed, pending, and partial work;
 - modified/read files;
 - commands and test results;
-- failed approaches and exact failure evidence;
-- decisions with source anchors;
-- unresolved questions.
+- failed approaches and exact failure causes;
+- decisions and rationale;
+- current beliefs and unresolved questions.
 
-Update fields from evidence, not free-form recap. Keep old values until a sourced event supersedes them.
+Update fields from source events. Keep old values until later evidence supersedes them.
 
 ### 3. Make selection goal-aware
 
-Current structural and age rules are a good deterministic floor. Add a relevance layer based on the current user goal, plan, files being changed, and unresolved failures. Recompute relevance when the goal changes. Do not let a relevance model remove protected exact evidence by itself.
+Current structural and age rules are a good deterministic floor. Add a relevance layer based on the current user goal, plan, files being changed, and unresolved failures. Recompute relevance when the goal changes. Do not let a relevance model remove protected state by itself.
 
-### 4. Optimize summaries from real failures
+### 4. Add selective optical history
 
-Follow Acon's useful idea: compare paired runs where full context succeeds and compressed context fails, identify the missing state, then update the compression guidelines. This is better than tuning prompts from stylistic review.
+Prototype snapcompact after the task ledger and reasoning digest, but before whole-prefix summarization. Gate it by measured model capability. Keep task state, paths, IDs, errors, code, diffs, commands, and recent reasoning as text. Use images for older conversational and observational history where broad coverage matters more than exact copying.
 
-### 5. Measure retrieval behavior
+### 5. Optimize compression from continuation failures
 
-Track:
+Use TRACE/Acon-style paired continuations: same environment state, full context versus compressed context. Measure repeated actions, blocked actions, wrong termination, lost decisions, and extra steps. Update the compressor from those boundary-local failures.
 
-- whether the model reads a transcript or artifact before repeating a tool call;
-- time and tokens spent recovering;
-- failed lookups;
-- exact-string recovery;
-- work repeated because a stub was insufficient.
+### 6. Store lossless sources and add per-item anchors
 
-A reference that is never read has no practical recovery value.
+This is secondary to active continuity but still useful. The pi/OMP reference document is a preview: tool payloads are capped and images are elided. Store native removed items in private artifacts and give every stub or ledger fact a stable source range.
 
-### 6. Consider snapcompact as a selective stage, not a replacement
+### 7. Measure retrieval and re-reasoning
 
-If coding-specific OCR tests pass, image only narrative or broad historical regions. Keep paths, IDs, errors, code, diffs, commands, and task state as text. This uses modality compression without asking pixels to carry the most exact-sensitive material.
+Track transcript/artifact reads, repeated tool calls, repeated analysis, failed lookups, recovery tokens, and time to resume productive work. A compacted agent that reconstructs its own state through repeated work has failed continuity even if it eventually succeeds.
 
-### 7. Integrate with OMP's method registry
+### 8. Integrate with OMP's method registry
 
-OMP's method list is closed today. A proper extension API should let Better Compact register a method with:
+OMP's method list is closed today. A proper extension API should let Better Compact register availability, budget controls, speculation policy, outcomes, projected/provider tokens, and recovery metadata.
 
-- availability;
-- budget controls;
-- speculation policy;
-- `committed`, `fallback`, `skipped`, and `failed` outcomes;
-- projected and provider-reported post-token counts;
-- recovery metadata.
-
-Then OMP could express the real hybrid directly:
+Then OMP could test method orders such as:
 
 ```json
-["shake", "better-compact", "snapcompact", "remote", "soft", "handoff"]
+["better-compact", "snapcompact", "remote", "handoff", "soft"]
 ```
 
 ## Benchmark required to choose a winner
@@ -550,6 +540,6 @@ Run a pilot first and derive sample size from paired-score variance. Do not clai
 
 ## Decision
 
-The evidence does not justify replacing Better Compact with snapcompact, remote compaction, or a plain summary. The first priority is the paired single-event and longitudinal benchmark. After that, follow the ordered changes in [How Better Compact should evolve](#how-better-compact-should-evolve).
+The evidence does not justify replacing Better Compact with one OMP method. It does justify changing Better Compact's first priority: preserve causal trajectory state by distilling old reasoning into a typed ledger before pruning it.
 
-Until that benchmark exists, “best” should mean **best-supported failure posture**, not highest claimed compression ratio. On that basis, reversible pruning followed by Better Compact's staged fallback is the safest current hypothesis for long-running coding tasks.
+The second priority is a paired single-event and longitudinal benchmark that measures coherent continuation: repeated work, blocked actions, wrong termination, lost decisions, belief drift, and executable task success. Selective optical history is the most promising new ladder experiment; OMP `handoff` is the native design most worth borrowing; `remote` is the strongest opaque baseline to test on OpenAI.
