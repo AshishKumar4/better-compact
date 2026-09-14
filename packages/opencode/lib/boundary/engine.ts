@@ -26,6 +26,7 @@ export async function processBoundaryTransform(input: {
     directory: string
     messages: WithParts[]
     providerReportedTokens?: number
+    summariesAllowed?: boolean
     summarize?: (jobs: BoundarySummaryJob[]) => Promise<Record<string, string>>
 }): Promise<BoundaryContextPlan | null> {
     const ports: EnginePorts = {
@@ -55,7 +56,8 @@ export async function processBoundaryTransform(input: {
         targetRatio: profile.targetPercent / 100,
         recentToolResultBudgetTokens: profile.recentToolTokens,
         providerReportedTokens: input.providerReportedTokens,
-        summarize: input.summarize,
+        summariesAllowed: input.summariesAllowed,
+        summarize: input.summariesAllowed === false ? undefined : input.summarize,
     })
     if (result.outcome === "unchanged") return null
     const decoded = openCodeCodec.decode(result.turns, input.messages)

@@ -183,11 +183,11 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
             }
             if (
                 compaction.summaryEffort !== undefined &&
-                !["inherit", "low", "medium", "high", "max"].includes(compaction.summaryEffort)
+                !["inherit", "low", "medium", "high", "max", "off"].includes(compaction.summaryEffort)
             ) {
                 errors.push({
                     key: "compaction.summaryEffort",
-                    expected: '"inherit" | "low" | "medium" | "high" | "max"',
+                    expected: '"inherit" | "low" | "medium" | "high" | "max" | "off"',
                     actual: JSON.stringify(compaction.summaryEffort),
                 })
             }

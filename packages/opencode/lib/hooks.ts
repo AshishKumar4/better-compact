@@ -160,6 +160,7 @@ async function runAutomaticTransform(input: {
                 directory: input.workingDirectory,
                 messages: input.messages,
                 providerReportedTokens: getCurrentTokenUsage(input.state, input.messages),
+                summariesAllowed: input.config.compaction.summaryEffort !== "off",
                 summarize: (jobs) =>
                     summarizeBoundaryJobs({
                         client: input.client,
@@ -459,6 +460,8 @@ async function runBetterCompact(input: {
 }): Promise<void> {
     const params = input.params ?? getCurrentParams(input.state, input.messages, input.logger)
     const profile = resolveCompactionProfile(input.config, input.compaction)
+    const summariesAllowed =
+        (input.compaction?.summaryEffort ?? input.config.compaction.summaryEffort) !== "off"
     const contextLimit = input.contextLimit && input.contextLimit > 0 ? input.contextLimit : (input.state.modelContextLimit ?? 200_000)
     const reportedCurrentTokens = input.currentTokens && input.currentTokens > 0 ? input.currentTokens : getCurrentTokenUsage(input.state, input.messages)
     startBoundaryJob(input.state, {
@@ -504,6 +507,7 @@ async function runBetterCompact(input: {
             targetRatio: profile.targetPercent / 100,
             recentToolResultBudgetTokens: profile.recentToolTokens,
             providerReportedTokens: reportedCurrentTokens,
+            summariesAllowed,
             priorPlan: input.state.boundary.activePlan ?? undefined,
         })
         if (!plan) {
@@ -642,6 +646,7 @@ async function runBetterCompact(input: {
                         targetRatio: profile.targetPercent / 100,
                         recentToolResultBudgetTokens: profile.recentToolTokens,
                         providerReportedTokens: reportedCurrentTokens,
+                        summariesAllowed,
                         priorPlan: input.state.boundary.activePlan ?? undefined,
                     }) ?? plan
             }

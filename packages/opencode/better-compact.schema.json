@@ -58,7 +58,7 @@
                 },
                 "summaryEffort": {
                     "type": "string",
-                    "enum": ["inherit", "low", "medium", "high", "max"],
+                    "enum": ["inherit", "low", "medium", "high", "max", "off"],
                     "default": "inherit",
                     "description": "Reasoning effort for scratch summaries. Unsupported effort levels fall back to the model default."
                 },
