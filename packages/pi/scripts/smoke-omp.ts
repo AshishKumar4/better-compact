@@ -226,9 +226,26 @@ async function main(): Promise<void> {
             assert.equal(message.role, source.role, `${reason} must keep the entry's role`)
         }
     }
+    // Stock Oh My Pi (what this smoke loads) has no rewrite seam and says so
+    // by omitting `supportsRewrite`; there the answer is one durable summary
+    // over a whole-turn boundary, the only shape it can persist.
+    const legacy = (await call("session_before_compact", compactEvent)) as Answer
+    assert.notEqual(legacy?.cancel, true)
+    assert.equal(legacy?.rewrite, undefined, "no rewrite may be sent to a host without the seam")
+    assert.ok(legacy?.compaction, "a host without the seam must get a durable compaction")
+    assert.ok(
+        branch.entries.some((entry) => entry.id === legacy.compaction?.firstKeptEntryId),
+        "firstKeptEntryId must name a real entry on the branch",
+    )
+    assert.match(String(legacy.compaction.summary), /^\[Better Compact context\]/)
+    assert.match(String(legacy.compaction.summary), /please do task 0/)
+    assert.equal(legacy.compaction.tokensBefore, 7_200)
+    label("a host without the rewrite seam received a durable summary compaction")
+
+    const rewriteEvent = { ...compactEvent, supportsRewrite: true }
     for (const reason of ["threshold", "idle", "overflow", "incomplete"] as const) {
         await call("auto_compaction_start", { reason, action: "context-full" })
-        assertRewrite((await call("session_before_compact", compactEvent)) as Answer, reason)
+        assertRewrite((await call("session_before_compact", rewriteEvent)) as Answer, reason)
         await call("auto_compaction_end", {
             action: "context-full",
             aborted: false,
@@ -241,7 +258,7 @@ async function main(): Promise<void> {
     assert.ok(modeCommand, "the duplicate instance owns the last-registered command name")
     await modeCommand.handler("omp", ctx)
     assertRewrite(
-        (await call("session_before_compact", compactEvent)) as Answer,
+        (await call("session_before_compact", rewriteEvent)) as Answer,
         "a session that started under Better Compact ownership",
     )
 
@@ -293,7 +310,7 @@ async function main(): Promise<void> {
     label("Better Compact ownership was restored for new sessions")
 
     await call("auto_compaction_start", { reason: "overflow", action: "context-full" })
-    const recovery = (await call("session_before_compact", compactEvent)) as Answer
+    const recovery = (await call("session_before_compact", rewriteEvent)) as Answer
     assertRewrite(recovery, "overflow")
     assert.ok(recovery?.rewrite)
     label("overflow trigger returned an in-place Better Compact rewrite")

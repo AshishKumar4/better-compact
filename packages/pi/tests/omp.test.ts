@@ -304,6 +304,7 @@ test("eighteen user messages survive as user entries across four cumulative rewr
         const answer = buildCompactionAnswer(
             { trigger: "manual", plan, turns, messages, branchEntries },
             ompSpec,
+            { supportsRewrite: true },
         )
         assert.ok(answer?.rewrite && answer.rewrite.length > 0, `round ${round} must rewrite`)
         for (const { entryId, message } of answer.rewrite) {
@@ -360,6 +361,7 @@ test("an oversized assistant turn is reduced in place, never kept raw or split",
             branchEntries: branch.entries,
         },
         ompSpec,
+        { supportsRewrite: true },
     )
     assert.ok(answer?.rewrite && answer.rewrite.length > 0)
     assert.equal(answer.compaction, undefined, "no durable boundary is needed for a rewrite")
@@ -407,6 +409,7 @@ test("a rewrite under the dead-band declines instead of inventing a summary", ()
             branchEntries: branch.entries,
         },
         ompSpec,
+        { supportsRewrite: true },
     )
     assert.equal(answer, undefined)
 })
@@ -442,6 +445,7 @@ test("prefixSummaryAllowed false answers the last resort with a rewrite, never a
             branchEntries: branch.entries,
         },
         ompSpec,
+        { supportsRewrite: true },
     )
     if (answer !== undefined) {
         assert.ok(answer.rewrite && answer.rewrite.length > 0)
@@ -483,6 +487,7 @@ test("the dead-band measures what the journal actually frees, not the plan's pro
                 branchEntries: branch.entries,
             },
             ompSpec,
+            { supportsRewrite: true },
         ),
         undefined,
     )
@@ -519,4 +524,31 @@ test("reprocessing an already-rewritten branch emits nothing for unchanged entri
         ),
         "a tool result stubbed last round is content-identical this round and must not be re-emitted",
     )
+})
+
+test("a host without the rewrite seam gets the pruned prefix as one durable summary", () => {
+    // Stock Oh My Pi ignores unknown answer fields, so a rewrite there would be
+    // silently dropped and native compaction would run instead. Without the
+    // seam the answer is the legacy shape: one summary, a whole-turn boundary
+    // naming a real entry, user turns kept verbatim inside it.
+    const messages = overTriggerConversation()
+    const branch = branchOf(messages)
+    const { plan, turns } = planFor(messages)
+    const answer = buildCompactionAnswer(
+        {
+            trigger: "threshold",
+            plan,
+            turns,
+            messages: branch.messages,
+            branchEntries: branch.entries,
+        },
+        ompSpec,
+        { supportsRewrite: false },
+    )
+    assert.ok(answer?.compaction)
+    assert.equal(answer.rewrite, undefined)
+    assert.ok(branch.entries.some((entry) => entry.id === answer.compaction?.firstKeptEntryId))
+    assert.match(answer.compaction.summary, /^\[Better Compact context\]/)
+    assert.match(answer.compaction.summary, /please do task 0/)
+    assert.equal(answer.tokensFreed, plan.beforeTokens - plan.afterPruneTokens)
 })

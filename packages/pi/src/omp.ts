@@ -205,6 +205,11 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
          * the rewrite lands first, then the boundary is committed over the
          * already-pruned branch.
          *
+         * A host without the rewrite seam (stock Oh My Pi) only persists one
+         * summary plus a contiguous tail, so there the pruned prefix is rendered
+         * as that summary: user turns as written, dropped tool calls as one-line
+         * stubs, collapsed runs carrying their summaries, and a transcript pointer.
+         *
          * Returning nothing hands the run back to the native summarizer rather than
          * leaving the session uncompacted.
          */
@@ -226,6 +231,10 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
                         providerReportedTokens: providerTokens,
                     })
 
+                    // Published Oh My Pi types predate the seam; the fork sets
+                    // `supportsRewrite` on the paths that honor a rewrite.
+                    const supportsRewrite =
+                        "supportsRewrite" in event && event.supportsRewrite === true
                     const answer = (candidate: typeof plan) =>
                         buildCompactionAnswer(
                             {
@@ -236,6 +245,7 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
                                 branchEntries: event.branchEntries,
                             },
                             ompSpec,
+                            { supportsRewrite },
                         )
 
                     // Gate before paying for summaries, then compose again on the

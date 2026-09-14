@@ -201,8 +201,10 @@ export interface RewriteEntry {
  *   the host settles the pass with no compaction boundary.
  * - `rewrite` + `compaction`: the rewrite lands first, then the boundary is
  *   committed over the already-pruned branch (the last-resort prefix summary).
- * - `undefined`: Better Compact declines — the rewrite frees too little to
- *   move the host's threshold, or nothing message-shaped changed.
+ * - `compaction` alone: the host has no rewrite seam, so the pruned prefix is
+ *   committed as one summary the way stock Oh My Pi persists it.
+ * - `undefined`: Better Compact declines — too little is freed to move the
+ *   host's threshold, or nothing message-shaped changed.
  */
 export interface CompactionAnswer {
     rewrite?: RewriteEntry[]
@@ -210,26 +212,42 @@ export interface CompactionAnswer {
         summary: string
         firstKeptEntryId: string
     }
-    /** Tokens the rewrite frees from the journal, on the codec's scale. */
+    /** Tokens the answer frees from the journal, on the codec's scale. */
     tokensFreed: number
 }
 
 /**
- * Compose the handler answer for one plan: the in-place rewrite plus, when the
- * ladder declared the last-resort prefix summary, the durable boundary on top.
+ * Compose the handler answer for one plan.
  *
- * The dead-band is measured on the rewrite itself rather than on the plan's
- * projected numbers: a collapsed run's members stay in the journal as stubs,
- * so the projection over-counts what the host actually reclaims. A boundary
- * that cannot be named (the plan split a turn) leaves the rewrite alone as the
- * answer, which is the only durable shape a split boundary has.
+ * On a host with the rewrite seam the answer is the in-place rewrite plus,
+ * when the ladder declared the last-resort prefix summary, the durable
+ * boundary on top. The dead-band is measured on the rewrite itself rather than
+ * on the plan's projection: a collapsed run's members stay in the journal as
+ * stubs, so the projection over-counts what the host actually reclaims. A
+ * boundary that cannot be named (the plan split a turn) leaves the rewrite
+ * alone as the answer, which is the only durable shape a split boundary has.
+ *
+ * Without the seam the only durable shape is one summary plus a whole-turn
+ * boundary, so the pruned prefix is rendered as text and the dead-band is the
+ * plan's projection, which is exactly what that summary reclaims.
  */
 export function buildCompactionAnswer(
     input: CompactionDecisionInput,
     spec: LadderSpec,
+    host: { supportsRewrite: boolean },
 ): CompactionAnswer | undefined {
     const { plan } = input
     if (!plan) return undefined
+
+    if (!host.supportsRewrite) {
+        const tokensFreed = Math.max(0, plan.beforeTokens - plan.afterPruneTokens)
+        if (tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return undefined
+        const decision = decideCompaction(input)
+        if (decision.kind === "decline") return undefined
+        const summary = formatDurableCompaction(plan, input.turns, spec)
+        if (!summary) return undefined
+        return { compaction: { summary, firstKeptEntryId: decision.firstKeptEntryId }, tokensFreed }
+    }
 
     const rewrite = rewriteEntriesForPlan(plan, input.turns, input.branchEntries, spec)
     if (rewrite.tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return undefined
