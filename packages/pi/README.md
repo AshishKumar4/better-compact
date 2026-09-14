@@ -20,7 +20,7 @@ It prunes old tool output and reasoning, keeps recent work intact, stores remove
 
 ### Oh My Pi
 
-Requires version 0.3.1 or newer.
+Requires Oh My Pi 18 or newer. An OMP build with the in-place rewrite seam keeps history as real messages; stock OMP receives a summary compaction.
 
 ```bash
 omp plugin install @better-compact/pi
@@ -151,15 +151,19 @@ Set `ompCompactionOwner` to `omp` and restart to keep request pruning while rest
 
 OMP keeps control of timing, retry, rollback, headroom checks, continuation, and provider history.
 
-When Better Compact owns committed compaction, the result contains:
+When Better Compact owns committed compaction, the pruned prefix keeps:
 
-- user turns kept as written;
+- user turns as written;
 - dropped tool calls reduced to short action stubs;
 - selected assistant runs replaced by summaries;
 - a reference to the raw transcript on disk;
-- the recent tail unchanged.
+- the recent tail unchanged, sized by a token budget rather than a turn count.
 
-OMP uses its native methods when it owns compaction or when Better Compact cannot produce a valid whole-turn boundary.
+How that prefix is persisted depends on the host. An OMP build with the in-place rewrite seam (`supportsRewrite` on the compaction event) receives each kept entry rewritten in place: user messages stay user messages and no entry is folded into a summary. Stock OMP receives the same prefix as one summary over a whole-turn boundary, the only shape it can persist. The last-resort prefix summary is off by default; set `custom.prefixSummary` to `true` to allow it.
+
+OMP uses its native methods when it owns compaction, when Better Compact cannot produce a valid boundary, or when a pass would free less than the no-progress dead-band.
+
+`summaryEffort` accepts `off` to skip side-model summaries; collapsed runs then carry a deterministic preview and the transcript pointer.
 
 ### pi
 
