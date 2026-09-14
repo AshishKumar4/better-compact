@@ -203,31 +203,46 @@ async function main(): Promise<void> {
         signal: AbortSignal.timeout(25_000),
     }
 
-    // Every trigger commits: `{cancel:true}` would be re-entered by the host on
-    // the next turn and at every mid-turn tool boundary, because its threshold
-    // is anchored on stored history that request pruning cannot move.
+    type Answer =
+        | {
+              cancel?: boolean
+              rewrite?: Array<{ entryId: string; message: { role: string } }>
+              compaction?: Record<string, unknown>
+          }
+        | undefined
+    const entryById = new Map(branch.entries.map((entry) => [entry.id, entry]))
+    // Every trigger answers with an in-place rewrite: `{cancel:true}` would be
+    // re-entered by the host on the next turn and at every mid-turn tool
+    // boundary, and a summary boundary would rasterize history the rewrite
+    // keeps as real messages.
+    const assertRewrite = (result: Answer, reason: string): void => {
+        assert.notEqual(result?.cancel, true, `${reason} must not cancel the host's run`)
+        assert.ok(result?.rewrite && result.rewrite.length > 0, `${reason} must rewrite history`)
+        for (const { entryId, message } of result.rewrite) {
+            const entry = entryById.get(entryId)
+            assert.ok(entry, `${reason} named an entry that is not on the branch: ${entryId}`)
+            const source = entry.message as { role: string }
+            assert.notEqual(source.role, "user", `${reason} must never rewrite a user entry`)
+            assert.equal(message.role, source.role, `${reason} must keep the entry's role`)
+        }
+    }
     for (const reason of ["threshold", "idle", "overflow", "incomplete"] as const) {
         await call("auto_compaction_start", { reason, action: "context-full" })
-        const result = (await call("session_before_compact", compactEvent)) as
-            { cancel?: boolean; compaction?: Record<string, unknown> } | undefined
-        assert.notEqual(result?.cancel, true, `${reason} must not cancel the host's run`)
-        assert.ok(result?.compaction, `${reason} must return a durable compaction`)
+        assertRewrite((await call("session_before_compact", compactEvent)) as Answer, reason)
         await call("auto_compaction_end", {
             action: "context-full",
             aborted: false,
             willRetry: false,
         })
     }
-    label("every automatic trigger committed a Better Compact compaction")
+    label("every automatic trigger answered with an in-place Better Compact rewrite")
 
     const modeCommand = duplicate.commands.get("better-compact-mode")
     assert.ok(modeCommand, "the duplicate instance owns the last-registered command name")
     await modeCommand.handler("omp", ctx)
-    const activeStillBetter = (await call("session_before_compact", compactEvent)) as
-        { compaction?: unknown } | undefined
-    assert.ok(
-        activeStillBetter?.compaction,
-        "mode changes must not leave OMP in a half-switched session",
+    assertRewrite(
+        (await call("session_before_compact", compactEvent)) as Answer,
+        "a session that started under Better Compact ownership",
     )
 
     const native: Recorded = {
@@ -278,44 +293,30 @@ async function main(): Promise<void> {
     label("Better Compact ownership was restored for new sessions")
 
     await call("auto_compaction_start", { reason: "overflow", action: "context-full" })
-    const recovery = (await call("session_before_compact", compactEvent)) as
-        { cancel?: boolean; compaction?: Record<string, unknown> } | undefined
-    assert.ok(recovery?.compaction, "an overflow run must return a durable compaction")
-    const compaction = recovery.compaction
-    assert.ok(
-        branch.entries.some((entry) => entry.id === compaction.firstKeptEntryId),
-        "firstKeptEntryId must name a real entry on the branch",
-    )
-    assert.match(String(compaction.summary), /^\[Better Compact context\]/)
-    assert.match(String(compaction.summary), /## Reference Files/)
-    assert.match(
-        String(compaction.summary),
-        /please do task 0/,
-        "the durable context must keep the user turns the ladder preserved",
-    )
-    assert.equal(compaction.tokensBefore, 7_200)
-    label("overflow trigger returned a committed Better Compact compaction")
+    const recovery = (await call("session_before_compact", compactEvent)) as Answer
+    assertRewrite(recovery, "overflow")
+    assert.ok(recovery?.rewrite)
+    label("overflow trigger returned an in-place Better Compact rewrite")
 
-    // What the host does with that result: one summary, then the kept tail.
-    const committed = buildSessionContext([
-        ...branch.entries,
-        {
-            type: "compaction",
-            id: "compaction-1",
-            parentId: branch.entries.at(-1)!.id,
-            timestamp: Date.now(),
-            summary: String(compaction.summary),
-            shortSummary: String(compaction.shortSummary ?? ""),
-            firstKeptEntryId: String(compaction.firstKeptEntryId),
-            tokensBefore: 7_200,
-        },
-    ]).messages
+    // What the host does with that result: each named entry keeps its id,
+    // role and position with the smaller body, and the rebuilt context shrinks.
+    const rewritten = new Map(recovery.rewrite.map(({ entryId, message }) => [entryId, message]))
+    const committed = buildSessionContext(
+        branch.entries.map((entry) => {
+            const message = rewritten.get(entry.id)
+            return message ? { ...entry, message } : entry
+        }),
+    ).messages
+    assert.equal(committed.length, messages.length, "a rewrite never adds or removes messages")
+    const size = (value: unknown): number => JSON.stringify(value).length
     assert.ok(
-        committed.length < messages.length,
-        `committing the compaction must shrink context (${messages.length} -> ${committed.length})`,
+        size(committed) < size(messages),
+        `applying the rewrite must shrink context (${size(messages)} -> ${size(committed)} chars)`,
     )
-    assert.match(JSON.stringify(committed), /\[Better Compact context\]/)
-    label(`host replayed the compaction as ${committed.length} messages`)
+    assert.match(JSON.stringify(committed), /please do task 0/, "user turns survive as written")
+    label(
+        `host replayed the rewrite as ${committed.length} messages, ${size(messages) - size(committed)} chars smaller`,
+    )
 
     process.stdout.write("\nOK — Better Compact owns compaction in Oh My Pi.\n")
 }

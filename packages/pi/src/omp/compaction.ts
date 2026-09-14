@@ -1,9 +1,11 @@
 import {
     transformTurns,
     type BoundaryContextPlan,
+    type Item,
     type LadderSpec,
     type Turn,
 } from "@better-compact/core"
+import { piCodec, rewriteTurn, type PiMessage } from "../codec"
 
 /**
  * Messages are compared by reference only, so their type is deliberately
@@ -34,6 +36,13 @@ export interface BranchEntry {
 export type CompactionTrigger = "threshold" | "overflow" | "idle" | "incomplete" | "manual"
 
 /**
+ * Dead-band on the tokens a rewrite actually frees from the journal. Under
+ * this, rewriting entries is churn that cannot move the host's threshold, so
+ * Better Compact declines and the host's own method answers instead.
+ */
+export const COMPACTION_NO_PROGRESS_TOKENS = 4_096
+
+/**
  * What Better Compact does with one compaction request.
  *
  * - `compact`: the plan's summary and boundary become a durable host compaction.
@@ -51,8 +60,7 @@ export type CompactionTrigger = "threshold" | "overflow" | "idle" | "incomplete"
  * is the honest answer.
  */
 export type CompactionDecision =
-    | { kind: "compact"; firstKeptEntryId: string }
-    | { kind: "decline"; reason: string }
+    { kind: "compact"; firstKeptEntryId: string } | { kind: "decline"; reason: string }
 
 export interface CompactionDecisionInput {
     trigger: CompactionTrigger
@@ -174,4 +182,167 @@ export function firstKeptEntryIdForPlan(
         if (entryId !== undefined) return entryId
     }
     return null
+}
+
+/**
+ * The durable-history answer the `session_before_compact` rewrite seam carries:
+ * per kept entry, a replacement message body. The entry keeps its id, role and
+ * position — only its body shrinks — which is exactly what the host persists.
+ */
+export interface RewriteEntry {
+    entryId: string
+    message: PiMessage
+}
+
+/**
+ * What the `session_before_compact` handler returns.
+ *
+ * - `rewrite` alone: every kept entry stays where it is with a reduced body;
+ *   the host settles the pass with no compaction boundary.
+ * - `rewrite` + `compaction`: the rewrite lands first, then the boundary is
+ *   committed over the already-pruned branch (the last-resort prefix summary).
+ * - `undefined`: Better Compact declines — the rewrite frees too little to
+ *   move the host's threshold, or nothing message-shaped changed.
+ */
+export interface CompactionAnswer {
+    rewrite?: RewriteEntry[]
+    compaction?: {
+        summary: string
+        firstKeptEntryId: string
+    }
+    /** Tokens the rewrite frees from the journal, on the codec's scale. */
+    tokensFreed: number
+}
+
+/**
+ * Compose the handler answer for one plan: the in-place rewrite plus, when the
+ * ladder declared the last-resort prefix summary, the durable boundary on top.
+ *
+ * The dead-band is measured on the rewrite itself rather than on the plan's
+ * projected numbers: a collapsed run's members stay in the journal as stubs,
+ * so the projection over-counts what the host actually reclaims. A boundary
+ * that cannot be named (the plan split a turn) leaves the rewrite alone as the
+ * answer, which is the only durable shape a split boundary has.
+ */
+export function buildCompactionAnswer(
+    input: CompactionDecisionInput,
+    spec: LadderSpec,
+): CompactionAnswer | undefined {
+    const { plan } = input
+    if (!plan) return undefined
+
+    const rewrite = rewriteEntriesForPlan(plan, input.turns, input.branchEntries, spec)
+    if (rewrite.tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return undefined
+    const answer: CompactionAnswer = { rewrite: rewrite.entries, tokensFreed: rewrite.tokensFreed }
+
+    if (plan.requiresCustomCompaction) {
+        const decision = decideCompaction(input)
+        const summary =
+            decision.kind === "compact" && formatDurableCompaction(plan, input.turns, spec)
+        if (decision.kind === "compact" && summary) {
+            answer.compaction = { summary, firstKeptEntryId: decision.firstKeptEntryId }
+        }
+    }
+    return answer
+}
+
+/**
+ * Map a plan onto per-entry rewrites: transform the turns, then align each
+ * source message with what the plan made of it. Only changed message entries
+ * earn a rewrite and user-role entries are never touched. A message the plan
+ * emptied entirely is reduced to a one-line stub so its tokens are actually
+ * freed — rewriting cannot remove an entry, only shrink it — and message kinds
+ * the stub cannot express stay as they are.
+ */
+export function rewriteEntriesForPlan(
+    plan: BoundaryContextPlan,
+    turns: Turn[],
+    branchEntries: readonly BranchEntry[],
+    spec: LadderSpec,
+): { entries: RewriteEntry[]; tokensFreed: number } {
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    const transformedByHandle = new Map<unknown, Turn>()
+    for (const turn of transformed) {
+        if (turn.handle !== undefined) transformedByHandle.set(turn.handle, turn)
+    }
+
+    const entryIdByMessage = new Map<unknown, string>()
+    for (const entry of branchEntries) {
+        if (entry.type === "message" && entry.message !== undefined) {
+            entryIdByMessage.set(entry.message, entry.id)
+        }
+    }
+
+    const stubNote = `[Compacted by Better Compact — raw history: ${plan.transcript.relativePath}]`
+    const entries: RewriteEntry[] = []
+    let tokensFreed = 0
+    for (const turn of turns) {
+        const next = turn.handle === undefined ? undefined : transformedByHandle.get(turn.handle)
+        // A turn the plan dropped entirely (a collapsed run's later members, a
+        // headless tool-only turn) has no surviving item to rebuild against;
+        // every message it carried is stubbed.
+        const pairs =
+            next === undefined
+                ? ((turn.handle as PiMessage[] | undefined) ?? []).map((source) => ({
+                      source,
+                      rewritten: null,
+                  }))
+                : rewriteTurn(next)
+        for (const pair of pairs) {
+            if (pair.source.role === "user") continue
+            const entryId = entryIdByMessage.get(pair.source)
+            if (entryId === undefined) continue
+            const rewritten =
+                pair.rewritten ?? stubMessage(pair.source, stubNote, next?.items ?? [])
+            if (JSON.stringify(rewritten) === JSON.stringify(pair.source)) continue
+            tokensFreed += messageTokens(pair.source) - messageTokens(rewritten)
+            entries.push({ entryId, message: rewritten })
+        }
+    }
+    return { entries, tokensFreed: Math.max(0, tokensFreed) }
+}
+
+function messageTokens(message: PiMessage): number {
+    return piCodec.estimateTurns(piCodec.encode([message]))
+}
+
+/**
+ * The one-line replacement for a message the plan emptied. Only the kinds
+ * that carry the bulk of a session shrink — assistant text, tool results and
+ * shell output; everything else is returned unchanged and therefore skipped.
+ * An assistant's tool calls stay, emptied of their arguments, so the results
+ * that follow keep a call to pair with.
+ */
+function stubMessage(source: PiMessage, note: string, items: readonly Item[]): PiMessage {
+    switch (source.role) {
+        case "assistant":
+            return {
+                ...source,
+                content: [
+                    { type: "text", text: note },
+                    ...source.content.flatMap((block) =>
+                        block.type === "toolCall" ? [{ ...block, arguments: {} }] : [],
+                    ),
+                ],
+            }
+        case "toolResult": {
+            // When the call's stub survived inside the rewritten turn, the
+            // result keeps that one-liner instead of the generic note.
+            const stub = items.find(
+                (item) =>
+                    item.kind === "synthetic" &&
+                    (item.key.startsWith(`${source.toolCallId}_better_compact_text_`) ||
+                        item.key.startsWith(`${source.toolCallId}#`)),
+            )
+            return {
+                ...source,
+                content: [{ type: "text", text: stub?.kind === "synthetic" ? stub.text : note }],
+            }
+        }
+        case "bashExecution":
+        case "pythonExecution":
+            return { ...source, output: note, meta: undefined }
+        default:
+            return source
+    }
 }

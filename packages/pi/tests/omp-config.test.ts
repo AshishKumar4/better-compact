@@ -1,9 +1,10 @@
+import { resolveCompactionProfile } from "@better-compact/core"
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { updateConfigObject } from "../src/config"
+import { mergeCompactionConfig, parseCompactionConfig, updateConfigObject } from "../src/config"
 import {
     commandOmpCompactionOwner,
     loadOmpCompactionOwner,
@@ -71,4 +72,35 @@ test("owner command accepts only the public values", () => {
     assert.equal(commandOmpCompactionOwner("snapcompact"), null)
     assert.equal(commandOmpCompactionOwner("native"), null)
     assert.equal(commandOmpCompactionOwner(""), null)
+})
+
+test("compaction config accepts summaryEffort off and the prefixSummary opt-in", () => {
+    const parsed = parseCompactionConfig({
+        summaryEffort: "off",
+        custom: { prefixSummary: true, targetPercent: 40 },
+    })
+    assert.equal(parsed.summaryEffort, "off")
+    assert.deepEqual(parsed.custom, { prefixSummary: true, targetPercent: 40 })
+
+    // The last-resort merge stays opt-in: absent and non-boolean values both
+    // normalize to false.
+    assert.equal(mergeCompactionConfig().custom.prefixSummary, false)
+    assert.equal(
+        mergeCompactionConfig({ custom: { prefixSummary: true } }).custom.prefixSummary,
+        true,
+    )
+    assert.equal(parseCompactionConfig({ summaryEffort: "turbo" }).summaryEffort, undefined)
+})
+
+test("the prefixSummary opt-in survives a named preset", () => {
+    const profile = resolveCompactionProfile({
+        compaction: mergeCompactionConfig({ preset: "light", custom: { prefixSummary: true } }),
+    })
+    assert.equal(profile.preset, "light")
+    assert.equal(profile.triggerPercent, 85)
+    assert.equal(profile.prefixSummary, true)
+    assert.equal(
+        resolveCompactionProfile({ compaction: mergeCompactionConfig() }).prefixSummary,
+        false,
+    )
 })

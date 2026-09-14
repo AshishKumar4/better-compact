@@ -72,9 +72,16 @@ test("an oversized multi-block user turn keeps only its newest block raw", () =>
     assert.ok(raw?.role === "user" && Array.isArray(raw.content))
     assert.deepEqual(raw.content, [newest])
     assert.equal(raw.content[0], newest)
-    assert.ok(piCodec.estimateTurns(transformed) < piCodec.estimateTurns(turns))
+    // The compacted user block survives inside the prefix summary verbatim:
+    // user prose is never rewrapped or truncated, even when it dominates the
+    // turn — the summary gets longer, but the contract holds byte-for-byte.
+    const summaryMessage = decoded[0]
+    assert.ok(summaryMessage?.role === "user" && Array.isArray(summaryMessage.content))
+    const firstBlock = summaryMessage.content[0]
+    assert.ok(firstBlock?.type === "text" && typeof firstBlock.text === "string")
+    assert.ok(firstBlock.text.includes("old user detail ".repeat(4_000)))
 
-    const replayed = replayPlanSnapshot(turns, toPlanSnapshot(plan), piSpec)
+    const replayed = replayPlanSnapshot(turns, toPlanSnapshot(plan), piSpec, { allowRegrown: true })
     assert.ok(replayed)
     assert.deepEqual(piCodec.decode(replayed, messages), decoded)
 })

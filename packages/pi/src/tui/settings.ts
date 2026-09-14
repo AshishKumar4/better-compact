@@ -2,7 +2,7 @@ import type { CompactionConfig, CompactionPreset, SummaryEffort } from "@better-
 import type { HostSettingsItem, HostSettingsUi } from "./host"
 
 const PRESETS: CompactionPreset[] = ["light", "moderate", "max"]
-const EFFORTS: SummaryEffort[] = ["inherit", "low", "medium", "high", "max"]
+const EFFORTS: SummaryEffort[] = ["inherit", "low", "medium", "high", "max", "off"]
 const AUTOMATIC = ["on", "off"]
 
 const PRESET_HINT: Record<string, string> = {

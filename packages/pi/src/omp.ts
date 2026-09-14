@@ -10,7 +10,7 @@ import {
 import { SettingsList } from "@oh-my-pi/pi-tui"
 import { commandPreset, CONFIG_FILE, errorText } from "./config"
 import { ompCodec, ompSpec } from "./omp/codec"
-import { decideCompaction, formatDurableCompaction, type CompactionTrigger } from "./omp/compaction"
+import { buildCompactionAnswer, type CompactionTrigger } from "./omp/compaction"
 import {
     commandOmpCompactionOwner,
     isOmpCompactionOwner,
@@ -37,6 +37,47 @@ import { WidgetComponent } from "./tui/widget"
  * just without LLM polish on the collapsed runs.
  */
 const COMPACT_SUMMARY_DEADLINE_MS = 20_000
+
+/**
+ * Oh My Pi's `compaction.keepRecentTokens` default. The host's live setting is
+ * not exposed to extensions, so the compaction-time tail budget tracks the
+ * default — the value every unconfigured session actually runs with.
+ */
+const KEEP_RECENT_TOKENS = 20_000
+
+/**
+ * Provider-scale context tokens for the trigger math, billed the way the host
+ * does: the last assistant message's usage, because that is what the next
+ * request is priced against. A turn billed at zero (a failed or synthetic
+ * response) carries no information and is skipped like a missing one.
+ */
+function billedContextTokens(messages: OmpAgentMessage[]): number | undefined {
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index]
+        if (message.role !== "assistant" || message.usage === undefined) continue
+        const { input, output, cacheRead, cacheWrite } = message.usage
+        const billed = input + output + cacheRead + cacheWrite
+        if (billed > 0) return billed
+    }
+    return undefined
+}
+
+/**
+ * The handler answer type Oh My Pi's `session_before_compact` seam accepts.
+ * Published types predate the seam, so `rewrite` is declared here structurally
+ * — the runtime applies `{ entryId, message }` entries whose ids name kept
+ * branch entries, in place, without reordering.
+ */
+interface BetterCompactBeforeCompactResult {
+    cancel?: boolean
+    compaction?: {
+        summary: string
+        firstKeptEntryId: string
+        tokensBefore: number
+        shortSummary?: string
+    }
+    rewrite?: { entryId: string; message: OmpAgentMessage }[]
+}
 const logger: Logger = {
     info() {},
     debug() {},
@@ -81,7 +122,16 @@ function createOmpHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, OmpAgent
         // plans against the same history the host would send.
         durableMessages: (ctx) => buildSessionContext(ctx.sessionManager.getBranch()).messages,
         contextWindow: (ctx) => ctx.model?.contextWindow ?? ctx.getContextUsage()?.contextWindow,
-        providerTokens: (ctx) => ctx.getContextUsage()?.tokens,
+        // The host's gauge includes system prompt and tool-schema overhead the
+        // ladder's estimate never sees; it is the fallback when no turn has been
+        // billed yet.
+        providerTokens: (ctx) =>
+            billedContextTokens(buildSessionContext(ctx.sessionManager.getBranch()).messages) ??
+            ctx.getContextUsage()?.tokens,
+        tailBudgetTokens: {
+            floor: KEEP_RECENT_TOKENS,
+            ceiling: KEEP_RECENT_TOKENS * 3,
+        },
         // Oh My Pi exposes no extension-facing project-trust query, so only the
         // global file is read: a project file would be executable policy with
         // nothing vouching for the working tree.
@@ -146,89 +196,107 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
          * `/compact`, the pre-prompt and mid-turn thresholds, idle maintenance, and
          * overflow recovery — and the native summarizer never runs.
          *
-         * The host's durable shape is one summary string plus a contiguous tail, so
-         * the ladder's compacted prefix is serialized into that slot: user turns as
-         * written, dropped tool calls as one-line stubs, collapsed runs carrying the
-         * summaries paid for here, and a pointer to the raw transcript. The host then
-         * persists it, rebuilds context, rebases accounting and resets dependent
-         * state exactly as it would for its own summarizer.
+         * The default answer is an in-place history rewrite: every kept entry
+         * stays where it is with a reduced body — user turns as written, pruned
+         * tool calls emptied of their arguments, dropped results stubbed to a
+         * one-liner — so the journal stays a sequence of real messages instead of
+         * collapsing into a summary. When the ladder still cannot reach the target
+         * it declares the last-resort prefix summary, and the answer carries both:
+         * the rewrite lands first, then the boundary is committed over the
+         * already-pruned branch.
          *
          * Returning nothing hands the run back to the native summarizer rather than
          * leaving the session uncompacted.
          */
-        pi.on("session_before_compact", async (event, ctx) => {
-            const trigger = pendingTrigger ?? "manual"
-            try {
-                if (!runtime.owns(ctx)) return
-                const contextLimit = ctx.model?.contextWindow
-                if (!contextLimit || contextLimit <= 0) return
-                const messages = buildSessionContext(event.branchEntries).messages
-                if (messages.length === 0) return
+        pi.on(
+            "session_before_compact",
+            async (event, ctx): Promise<BetterCompactBeforeCompactResult | undefined> => {
+                const trigger = pendingTrigger ?? "manual"
+                try {
+                    if (!runtime.owns(ctx)) return
+                    const contextLimit = ctx.model?.contextWindow
+                    if (!contextLimit || contextLimit <= 0) return
+                    const messages = buildSessionContext(event.branchEntries).messages
+                    if (messages.length === 0) return
 
-                const turns = ompCodec.encode(messages)
-                const plan = await runtime.forcePlan(ctx, messages, contextLimit)
-                const decide = (candidate: typeof plan) =>
-                    decideCompaction({
-                        trigger,
-                        plan: candidate,
-                        turns,
-                        messages,
-                        branchEntries: event.branchEntries,
+                    const providerTokens =
+                        billedContextTokens(messages) ?? ctx.getContextUsage()?.tokens
+                    const turns = ompCodec.encode(messages)
+                    const plan = await runtime.forcePlan(ctx, messages, contextLimit, {
+                        providerReportedTokens: providerTokens,
                     })
 
-                // Gate before paying for summaries, then decide again on the plan
-                // that is actually committed so the boundary and the text agree.
-                const gate = decide(plan)
-                if (gate.kind === "decline" || !plan) {
-                    logger.warn("Better Compact declined this compaction", {
+                    const answer = (candidate: typeof plan) =>
+                        buildCompactionAnswer(
+                            {
+                                trigger,
+                                plan: candidate,
+                                turns,
+                                messages,
+                                branchEntries: event.branchEntries,
+                            },
+                            ompSpec,
+                        )
+
+                    // Gate before paying for summaries, then compose again on the
+                    // plan that is actually committed so the answer and the text
+                    // agree. `undefined` means the host's native method runs.
+                    if (!plan || answer(plan) === undefined) {
+                        logger.warn("Better Compact declined this compaction", {
+                            trigger,
+                            reason: plan ? "no progress" : "no plan",
+                        })
+                        return
+                    }
+
+                    const inputs: BuildPlanInputs = {
+                        ...runtime.planInputs(ctx, contextLimit),
+                        force: true,
+                        providerReportedTokens: providerTokens,
+                    }
+                    const deadline = AbortSignal.any([
+                        event.signal,
+                        AbortSignal.timeout(COMPACT_SUMMARY_DEADLINE_MS),
+                    ])
+                    const finalPlan = await runtime.summarizeNow(ctx, turns, inputs, plan, deadline)
+
+                    const final = answer(finalPlan)
+                    if (!final) {
+                        logger.warn("Better Compact declined this compaction after summarizing", {
+                            trigger,
+                        })
+                        return
+                    }
+
+                    const reclaimed = Math.max(
+                        0,
+                        finalPlan.beforeTokens - finalPlan.afterPruneTokens,
+                    )
+                    runtime.clearWidget(ctx)
+                    const result: BetterCompactBeforeCompactResult = {}
+                    if (final.rewrite) {
+                        result.rewrite = final.rewrite.map(({ entryId, message }) => ({
+                            entryId,
+                            message: message as OmpAgentMessage,
+                        }))
+                    }
+                    if (final.compaction) {
+                        result.compaction = {
+                            summary: final.compaction.summary,
+                            shortSummary: `Better Compact reclaimed ${formatTokens(reclaimed)} tokens by pruning older context.`,
+                            firstKeptEntryId: final.compaction.firstKeptEntryId,
+                            tokensBefore: event.preparation.tokensBefore,
+                        }
+                    }
+                    return result
+                } catch (error) {
+                    logger.warn("Better Compact compaction failed; native compaction will run", {
                         trigger,
-                        reason: gate.kind === "decline" ? gate.reason : "no plan",
+                        error: errorText(error),
                     })
-                    return
                 }
-
-                const inputs: BuildPlanInputs = {
-                    ...runtime.planInputs(ctx, contextLimit),
-                    force: true,
-                }
-                const deadline = AbortSignal.any([
-                    event.signal,
-                    AbortSignal.timeout(COMPACT_SUMMARY_DEADLINE_MS),
-                ])
-                const finalPlan = await runtime.summarizeNow(ctx, turns, inputs, plan, deadline)
-
-                const decision = decide(finalPlan)
-                if (decision.kind === "decline") {
-                    logger.warn("Better Compact declined this compaction after summarizing", {
-                        trigger,
-                        reason: decision.reason,
-                    })
-                    return
-                }
-
-                const summary = formatDurableCompaction(finalPlan, turns, ompSpec)
-                if (!summary) {
-                    logger.warn("Better Compact produced no durable context", { trigger })
-                    return
-                }
-
-                const reclaimed = Math.max(0, finalPlan.beforeTokens - finalPlan.afterPruneTokens)
-                runtime.clearWidget(ctx)
-                return {
-                    compaction: {
-                        summary,
-                        shortSummary: `Better Compact reclaimed ${formatTokens(reclaimed)} tokens by pruning older context.`,
-                        firstKeptEntryId: decision.firstKeptEntryId,
-                        tokensBefore: event.preparation.tokensBefore,
-                    },
-                }
-            } catch (error) {
-                logger.warn("Better Compact compaction failed; native compaction will run", {
-                    trigger,
-                    error: errorText(error),
-                })
-            }
-        })
+            },
+        )
     }
 
     pi.registerCommand("better-compact", {

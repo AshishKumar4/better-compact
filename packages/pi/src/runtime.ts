@@ -60,6 +60,12 @@ export interface RuntimeHost<TCtx, TNative> {
     /** Provider-reported usage, when the host exposes it. */
     providerTokens(ctx: TCtx): number | undefined
     /**
+     * Token budget for the raw tail when the host's compaction keeps a fixed
+     * recent region (OMP: `compaction.keepRecentTokens`). Absent hosts leave
+     * the count-based tail in place.
+     */
+    tailBudgetTokens?: { floor: number; ceiling: number }
+    /**
      * Where Better Compact's own config lives. `project` is the host's trust
      * decision made explicit: `null` means the project file is not read at all.
      */
@@ -92,7 +98,9 @@ export interface Runtime<TCtx, TNative> {
         ctx: TCtx,
         messages: TNative[],
         contextLimit: number,
+        options?: { providerReportedTokens?: number },
     ): Promise<BoundaryContextPlan | null>
+    /** The shared plan inputs for this session and context window. */
     planInputs(ctx: TCtx, contextLimit: number): BuildPlanInputs
     /** Await this plan's summary jobs, bounded by `signal`, and rebuild with them. */
     summarizeNow(
@@ -143,10 +151,12 @@ export function createRuntime<TCtx, TNative>(
         triggerRatio: profile.triggerPercent / 100,
         targetRatio: profile.targetPercent / 100,
         recentToolResultBudgetTokens: profile.recentToolTokens,
+        summariesAllowed: config.summaryEffort !== "off",
+        prefixSummaryAllowed: profile.prefixSummary === true,
+        tailBudgetTokens: host.tailBudgetTokens,
         sessionKey: host.sessionId(ctx),
         citablePath: transcripts(ctx).citablePath,
     })
-
     const setWidget = (ctx: TCtx, next: Partial<WidgetState>): void => {
         widget = { ...widget, ...next }
         // The widget is docked above the editor, so it only earns its line when
@@ -214,6 +224,9 @@ export function createRuntime<TCtx, TNative>(
                 targetRatio: profile.targetPercent / 100,
                 recentToolResultBudgetTokens: profile.recentToolTokens,
                 providerReportedTokens: host.providerTokens(ctx),
+                summariesAllowed: config.summaryEffort !== "off",
+                prefixSummaryAllowed: profile.prefixSummary === true,
+                tailBudgetTokens: host.tailBudgetTokens,
             })
             if (result.outcome === "unchanged") return undefined
 
@@ -232,7 +245,7 @@ export function createRuntime<TCtx, TNative>(
             return { messages: codec.decode(result.turns, messages), plan }
         },
 
-        async forcePlan(ctx, messages, contextLimit) {
+        async forcePlan(ctx, messages, contextLimit, options) {
             const sessionKey = host.sessionId(ctx)
             const turns = codec.encode(messages)
             plans.adopt(sessionKey, turns)
@@ -243,6 +256,8 @@ export function createRuntime<TCtx, TNative>(
                     ...planInputs(ctx, contextLimit),
                     force: true,
                     priorPlan: priorPlan ?? undefined,
+                    providerReportedTokens:
+                        options?.providerReportedTokens ?? host.providerTokens(ctx),
                 },
                 spec,
             )

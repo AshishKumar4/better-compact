@@ -20,6 +20,7 @@ function config(): CompactionConfig {
             targetPercent: 35,
             recentToolTokens: 40_000,
             summarizerConcurrency: 4,
+            prefixSummary: false,
         },
     }
 }

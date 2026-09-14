@@ -167,6 +167,9 @@ function parseCustomConfig(value: unknown): Partial<CompactionCustomSettings> {
     ) {
         custom.summarizerConcurrency = value.summarizerConcurrency
     }
+    if (typeof value.prefixSummary === "boolean") {
+        custom.prefixSummary = value.prefixSummary
+    }
     return custom
 }
 
@@ -200,7 +203,8 @@ function isSummaryEffort(value: unknown): value is CompactionConfig["summaryEffo
         value === "low" ||
         value === "medium" ||
         value === "high" ||
-        value === "max"
+        value === "max" ||
+        value === "off"
     )
 }
 

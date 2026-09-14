@@ -118,7 +118,9 @@ export const toolConvention = (item: Extract<Item, { kind: "tool" }>) => {
 /**
  * Stage order shared by both pi-family hosts: prune what the model no longer
  * needs (superseded reads, stale failed inputs, old tool traffic), then old
- * thinking, then whole assistant runs.
+ * thinking, then whole assistant runs. Reasoning is stripped before runs are
+ * keyed so plan and replay hash the same items; the summarizer still sees the
+ * reasoning because run prompts read the pre-strip source turns.
  */
 export const LADDER_STAGES = [
     supersedeReadsStage,
@@ -255,6 +257,78 @@ function decodeTurn(turn: Turn): PiMessage[] {
             out.unshift({ role: "user", content: [{ type: "text", text }], timestamp: turn.stamp })
     }
     return out
+}
+
+/**
+ * In-place rewrite view of {@link decodeTurn}: every source message in the
+ * turn's group is paired with its rewritten form — `null` when the plan
+ * dropped everything the message carried. Unlike decode, nothing is skipped
+ * or synthesized, which is what a host needs to map plan output back onto
+ * durable journal entries it can only edit, never add or remove.
+ */
+export function rewriteTurn(turn: Turn): { source: PiMessage; rewritten: PiMessage | null }[] {
+    const group = turn.handle as PiMessage[] | undefined
+    if (!group) return []
+    const pairs: { source: PiMessage; rewritten: PiMessage | null }[] = []
+    for (const message of group) {
+        if (message.role === "assistant") {
+            pairs.push({ source: message, rewritten: rebuildAssistantRewrite(message, turn.items) })
+        } else if (message.role === "user") {
+            pairs.push({ source: message, rewritten: rebuildUser(message, turn.items) })
+        } else if (survives(message, turn.items)) {
+            pairs.push({ source: message, rewritten: message })
+        } else {
+            pairs.push({ source: message, rewritten: null })
+        }
+    }
+    return pairs
+}
+
+// The rewrite twin of rebuildAssistant. Where decode lets a dropped tool item
+// vanish with its result, an in-place rewrite cannot: the result message keeps
+// its own entry, so the call block must stay to preserve the pair — emptied of
+// its arguments, which are the tokens being reclaimed.
+function rebuildAssistantRewrite(message: AssistantMessage, items: Item[]): AssistantMessage {
+    const survivingCallIds = new Set(
+        items.filter((item) => item.kind === "tool").map((item) => item.callId),
+    )
+    const droppedCalls = new Map<string, ToolCall>()
+    for (const block of message.content) {
+        if (block.type === "toolCall" && !survivingCallIds.has(block.id)) {
+            droppedCalls.set(block.id, block)
+        }
+    }
+
+    const content: AssistantContent[] = []
+    // Emit an emptied call right before the stub that replaced it when the
+    // stub key still names the dropped call id (deduped ids carry `#n`).
+    const emptiedCall = (key: string): AssistantContent | null => {
+        for (const [callId, call] of droppedCalls) {
+            if (key.startsWith(`${callId}_better_compact_text_`) || key.startsWith(`${callId}#`)) {
+                droppedCalls.delete(callId)
+                return { ...call, arguments: {} }
+            }
+        }
+        return null
+    }
+    for (const item of items) {
+        if (item.kind === "text") content.push(item.handle as TextContent)
+        else if (item.kind === "reasoning") content.push(item.handle as ThinkingContent)
+        else if (item.kind === "tool") content.push(pairOf(item).call)
+        else if (item.kind === "synthetic") {
+            const call = emptiedCall(item.key)
+            if (call) content.push(call)
+            content.push({ type: "text", text: item.text })
+        } else if (!isWholeMessage(item.handle)) content.push(item.handle as AssistantContent)
+    }
+    // Dropped calls with no stubbed replacement still keep their pairing.
+    for (const call of droppedCalls.values()) {
+        content.push({ ...call, arguments: {} })
+    }
+    const unchanged =
+        content.length === message.content.length &&
+        content.every((block, index) => block === message.content[index])
+    return unchanged ? message : { ...message, content }
 }
 
 function survives(message: PiMessage, items: Item[]): boolean {
