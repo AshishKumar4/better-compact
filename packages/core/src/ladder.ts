@@ -16,6 +16,7 @@ import {
     assistantGroups,
     findLatestTodoCallId,
     findRawTailStartIndex,
+    findBudgetTailStartIndex,
     findRecentToolCallTail,
     formatPrefixSummary,
     primaryToolTarget,
@@ -59,7 +60,11 @@ export interface BuildPlanInputs extends BoundaryContextOptions {
     citablePath(sessionKey: string, rangeHash: string): string
 }
 
-export function buildPlan(turns: Turn[], inputs: BuildPlanInputs, spec: LadderSpec): BoundaryContextPlan | null {
+export function buildPlan(
+    turns: Turn[],
+    inputs: BuildPlanInputs,
+    spec: LadderSpec,
+): BoundaryContextPlan | null {
     const contextLimit = inputs.contextLimit
     if (!contextLimit || contextLimit <= 0 || turns.length === 0) return null
 
@@ -67,11 +72,14 @@ export function buildPlan(turns: Turn[], inputs: BuildPlanInputs, spec: LadderSp
     const targetRatio = inputs.targetRatio ?? TARGET_RATIO
     const rawEstimateTokens = spec.codec.estimateTurns(turns)
     const providerReportedTokens =
-        inputs.providerReportedTokens && inputs.providerReportedTokens > 0 ? inputs.providerReportedTokens : 0
+        inputs.providerReportedTokens && inputs.providerReportedTokens > 0
+            ? inputs.providerReportedTokens
+            : 0
     // Provider totals include system prompt, tool schemas, and cache accounting
     // that the char-based estimate cannot see. Carrying the delta keeps every
     // gate and stage number on the provider-equivalent scale.
-    const overheadTokens = providerReportedTokens > 0 ? Math.max(0, providerReportedTokens - rawEstimateTokens) : 0
+    const overheadTokens =
+        providerReportedTokens > 0 ? Math.max(0, providerReportedTokens - rawEstimateTokens) : 0
     const estimator: Estimator = { overheadTokens }
     const beforeTokens = providerReportedTokens > 0 ? providerReportedTokens : rawEstimateTokens
     const triggerTokens = Math.floor(contextLimit * triggerRatio)
@@ -80,15 +88,25 @@ export function buildPlan(turns: Turn[], inputs: BuildPlanInputs, spec: LadderSp
     // fresh turns the provider has not priced yet.
     if (!inputs.force && Math.max(beforeTokens, rawEstimateTokens) < triggerTokens) return null
 
-    const wholeTurnTailStartIndex = findRawTailStartIndex(
-        turns,
-        Math.max(1, inputs.minTailMessages ?? MIN_TAIL_MESSAGES),
-        Math.max(1, inputs.minTailUserTurns ?? MIN_TAIL_USER_TURNS),
-    )
     const targetTokens = Math.floor(contextLimit * targetRatio)
+    // A token budget replaces the count-based tail outright: its ceiling is
+    // the cap that keeps a long tool loop from staying raw in full. The raw
+    // tail can never exceed the target, or the target is unreachable by
+    // construction on small windows.
+    const tailStartIndex = inputs.tailBudgetTokens
+        ? findBudgetTailStartIndex(
+              turns,
+              boundedTailBudget(inputs.tailBudgetTokens, targetTokens),
+              spec.codec,
+          )
+        : findRawTailStartIndex(
+              turns,
+              Math.max(1, inputs.minTailMessages ?? MIN_TAIL_MESSAGES),
+              Math.max(1, inputs.minTailUserTurns ?? MIN_TAIL_USER_TURNS),
+          )
     const selectedBoundary = selectTailBoundary(
         turns,
-        wholeTurnTailStartIndex,
+        tailStartIndex,
         triggerTokens,
         targetTokens,
         spec.codec,
@@ -114,9 +132,8 @@ export function buildPlan(turns: Turn[], inputs: BuildPlanInputs, spec: LadderSp
         ? stripTranscriptReference(prior.prefixSummary, prior.transcriptRelativePath)
         : undefined
     const prefixSummaryResultKey = `prefix-summary:${compactedRangeHash}`
-    const prefixSummaryJobKey = expandedPrefix && priorPrefixSummary
-        ? prefixSummaryResultKey
-        : undefined
+    const prefixSummaryJobKey =
+        expandedPrefix && priorPrefixSummary ? prefixSummaryResultKey : undefined
     const assistantSummaries = {
         ...(prior?.assistantSummaries ?? {}),
         ...(inputs.assistantSummaries ?? {}),
@@ -151,14 +168,18 @@ export function buildPlan(turns: Turn[], inputs: BuildPlanInputs, spec: LadderSp
         assistantSummaryKeys: new Set<string>(prior?.assistantSummaryKeys ?? []),
         summaryJobs,
         selectRuns: true,
+        sourceTurns: new Map(compactedRange.map((turn) => [turn.key, turn])),
         targetTokens,
         referenceTokens: 0,
+        summariesAllowed: inputs.summariesAllowed !== false,
     }
+    const prefixSummaryAllowed = inputs.prefixSummaryAllowed !== false
     // The applied output always carries a reference message; gates must account
     // for it so a "trigger met" claim holds for the real transformed context.
     const reference = synthesizeReferenceTurn(turns, compactedRange, ctx, compactedRangeHash)
     ctx.referenceTokens = reference ? spec.codec.estimateTurns([reference]) : 0
-    const projectedTokens = () => estimateTurns(working, spec.codec, estimator) + ctx.referenceTokens
+    const projectedTokens = () =>
+        estimateTurns(working, spec.codec, estimator) + ctx.referenceTokens
 
     // Escalation chases the TARGET, not the trigger: the trigger decides when
     // compaction happens, the target decides how deep it goes. Stopping at
@@ -173,14 +194,20 @@ export function buildPlan(turns: Turn[], inputs: BuildPlanInputs, spec: LadderSp
     }
 
     let requiresCustomCompaction = false
-    let prefixSummary = inputs.prefixSummary
-        ?? rolledPrefixSummary
-        ?? (expandedPrefix ? undefined : priorPrefixSummary)
-    if (projectedTokens() >= triggerTokens || prior?.requiresCustomCompaction) {
-        const newlyCompactedTurns = expandedPrefix && priorBoundary
-            ? turnsBetweenBoundaries(turns, priorBoundary, boundary)
-            : []
+    let prefixSummary =
+        inputs.prefixSummary ??
+        rolledPrefixSummary ??
+        (expandedPrefix ? undefined : priorPrefixSummary)
+    if (
+        prefixSummaryAllowed &&
+        (projectedTokens() >= triggerTokens || prior?.requiresCustomCompaction)
+    ) {
+        const newlyCompactedTurns =
+            expandedPrefix && priorBoundary
+                ? turnsBetweenBoundaries(turns, priorBoundary, boundary)
+                : []
         if (
+            ctx.summariesAllowed !== false &&
             prefixSummaryJobKey &&
             priorPrefixSummary &&
             inputs.prefixSummary === undefined &&
@@ -252,7 +279,11 @@ export function buildPlan(turns: Turn[], inputs: BuildPlanInputs, spec: LadderSp
         assistantSummaries: ctx.assistantSummaries,
         prefixSummary,
     }
-    plan.afterPruneTokens = estimateTurns(transformTurns(turns, rawTailStartIndex, plan, spec), spec.codec, estimator)
+    plan.afterPruneTokens = estimateTurns(
+        transformTurns(turns, rawTailStartIndex, plan, spec),
+        spec.codec,
+        estimator,
+    )
     return plan
 }
 
@@ -298,8 +329,11 @@ export function transformTurns(
         assistantSummaryKeys: new Set(plan.assistantSummaryKeys),
         summaryJobs: [],
         selectRuns: false,
+        sourceTurns: new Map(originalPrefix.map((turn) => [turn.key, turn])),
         targetTokens: plan.targetTokens,
         referenceTokens: 0,
+        // Replay never queues jobs; gate them off so a stray push cannot leak.
+        summariesAllowed: false,
     }
     for (const stage of spec.stages) {
         if (stage.name === "assistant-runs") continue
@@ -339,7 +373,8 @@ export function replayPlanSnapshot(
         {
             sessionId: snapshot.sessionId,
             rangeHash: snapshot.rangeHash,
-            contextLimit: snapshot.contextLimit ?? Math.max(snapshot.beforeTokens, snapshot.targetTokens, 1),
+            contextLimit:
+                snapshot.contextLimit ?? Math.max(snapshot.beforeTokens, snapshot.targetTokens, 1),
             beforeTokens: snapshot.beforeTokens,
             afterPruneTokens: snapshot.afterPruneTokens,
             overheadTokens,
@@ -350,7 +385,8 @@ export function replayPlanSnapshot(
             rawTailItemBoundary: snapshot.rawTailItemBoundary,
             requiresCustomCompaction: snapshot.requiresCustomCompaction,
             preservedToolCallIds: snapshot.preservedToolCallIds ?? [],
-            assistantSummaryKeys: snapshot.assistantSummaryKeys ?? Object.keys(snapshot.assistantSummaries ?? {}),
+            assistantSummaryKeys:
+                snapshot.assistantSummaryKeys ?? Object.keys(snapshot.assistantSummaries ?? {}),
             transcript: {
                 relativePath: snapshot.transcriptRelativePath,
                 content: "",
@@ -365,7 +401,10 @@ export function replayPlanSnapshot(
     )
     // Once new turns regrow the context past the trigger, the frozen plan no
     // longer suffices; refuse so the caller rebuilds with a fresh boundary.
-    if (!options.allowRegrown && spec.codec.estimateTurns(transformed) + overheadTokens >= snapshot.triggerTokens) {
+    if (
+        !options.allowRegrown &&
+        spec.codec.estimateTurns(transformed) + overheadTokens >= snapshot.triggerTokens
+    ) {
         return null
     }
     return transformed
@@ -393,6 +432,9 @@ export interface Engine {
         targetRatio?: number
         recentToolResultBudgetTokens?: number
         providerReportedTokens?: number
+        tailBudgetTokens?: { floor: number; ceiling: number }
+        summariesAllowed?: boolean
+        prefixSummaryAllowed?: boolean
         force?: boolean
         // Side-model summary results for the automatic path. When a
         // fresh plan queues summary jobs, the engine runs them and rebuilds
@@ -413,6 +455,9 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
             targetRatio,
             recentToolResultBudgetTokens,
             providerReportedTokens,
+            tailBudgetTokens,
+            summariesAllowed,
+            prefixSummaryAllowed,
             force,
             summarize,
         }) {
@@ -432,6 +477,9 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
                 targetRatio,
                 recentToolResultBudgetTokens,
                 providerReportedTokens,
+                tailBudgetTokens,
+                summariesAllowed,
+                prefixSummaryAllowed,
                 force,
                 priorPlan,
                 sessionKey,
@@ -446,15 +494,16 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
                 try {
                     const assistantSummaries = await summarize(plan.summaryJobs)
                     if (Object.keys(assistantSummaries).length > 0) {
-                        plan = buildPlan(
-                            turns,
-                            {
-                                ...inputs,
-                                priorPlan: toPlanSnapshot(plan),
-                                assistantSummaries,
-                            },
-                            spec,
-                        ) ?? plan
+                        plan =
+                            buildPlan(
+                                turns,
+                                {
+                                    ...inputs,
+                                    priorPlan: toPlanSnapshot(plan),
+                                    assistantSummaries,
+                                },
+                                spec,
+                            ) ?? plan
                     }
                 } catch (error) {
                     ports.logger.warn("Summary scheduling failed; using deterministic fallback", {
@@ -464,7 +513,11 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
                 }
             }
 
-            await writeTranscript(plan, { transcripts: ports.transcripts, logger: ports.logger, codec: spec.codec })
+            await writeTranscript(plan, {
+                transcripts: ports.transcripts,
+                logger: ports.logger,
+                codec: spec.codec,
+            })
             const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
             await ports.plans.save(sessionKey, toPlanSnapshot(plan))
             ports.logger.info("Applied Better Compact staged pruning", {
@@ -477,6 +530,14 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
             return { outcome: "planned", turns: transformed, plan }
         },
     }
+}
+
+function boundedTailBudget(
+    budget: { floor: number; ceiling: number },
+    targetTokens: number,
+): { floor: number; ceiling: number } {
+    const ceiling = Math.min(budget.ceiling, targetTokens)
+    return { floor: Math.min(budget.floor, ceiling), ceiling }
 }
 
 function selectTailBoundary(
@@ -537,9 +598,7 @@ function recordedItemBoundary(
     const firstRawItem = turn.items[boundary.itemIndex]
     if (firstRawItem) return { itemKey: firstRawItem.key, side: "before" }
     const lastCompactedItem = turn.items[boundary.itemIndex - 1]
-    return lastCompactedItem
-        ? { itemKey: lastCompactedItem.key, side: "after" }
-        : undefined
+    return lastCompactedItem ? { itemKey: lastCompactedItem.key, side: "after" } : undefined
 }
 
 function partitionTurns(turns: Turn[], boundary: TailBoundary): PartitionedTurns {
@@ -611,11 +670,7 @@ function compareBoundaries(left: TailBoundary, right: TailBoundary): number {
         : left.turnIndex - right.turnIndex
 }
 
-function turnsBetweenBoundaries(
-    turns: Turn[],
-    start: TailBoundary,
-    end: TailBoundary,
-): Turn[] {
+function turnsBetweenBoundaries(turns: Turn[], start: TailBoundary, end: TailBoundary): Turn[] {
     if (compareBoundaries(end, start) <= 0) return []
     const delta: Turn[] = []
     for (let turnIndex = start.turnIndex; turnIndex <= end.turnIndex; turnIndex++) {
@@ -695,7 +750,11 @@ function applyPrefixSummary(
     compactedRangeHash?: string,
 ): StageMutationResult & { prefixSummary: string } {
     if (rawTailStartIndex <= 0) {
-        return { changedTurns: new Set<string>(), changedItems: 0, prefixSummary: prefixSummary ?? "" }
+        return {
+            changedTurns: new Set<string>(),
+            changedItems: 0,
+            prefixSummary: prefixSummary ?? "",
+        }
     }
     const compacted = working.slice(0, rawTailStartIndex)
     const summary = stripTranscriptReference(
@@ -774,9 +833,10 @@ function formatReferenceRun(group: Turn[], ctx: StageContext): string {
     const topicItem = group
         .flatMap((turn) => turn.items)
         .find((item) => (item.kind === "text" || item.kind === "synthetic") && item.text.trim())
-    const topic = topicItem && (topicItem.kind === "text" || topicItem.kind === "synthetic")
-        ? referenceTopic(topicItem.text)
-        : "(no assistant text)"
+    const topic =
+        topicItem && (topicItem.kind === "text" || topicItem.kind === "synthetic")
+            ? referenceTopic(topicItem.text)
+            : "(no assistant text)"
     const touchedText = formatTouchedReferences([...touched])
     return `- ${idRange} — ${touchedText} — ${topic}`
 }
@@ -851,12 +911,7 @@ function synthesizeSummaryTurn(
             {
                 kind: "synthetic",
                 key,
-                text: [
-                    "[Context Summary]",
-                    normalizedSummary,
-                    "",
-                    referenceBlock,
-                ].join("\n"),
+                text: ["[Context Summary]", normalizedSummary, "", referenceBlock].join("\n"),
             },
         ],
     }
@@ -865,7 +920,9 @@ function synthesizeSummaryTurn(
 function stripTranscriptReference(summary: string, transcriptRelativePath: string): string {
     const trimmed = summary.trim()
     const referenceBlock = `## Reference Files\n- "${transcriptRelativePath}"`
-    return trimmed.endsWith(referenceBlock) ? trimmed.slice(0, -referenceBlock.length).trimEnd() : trimmed
+    return trimmed.endsWith(referenceBlock)
+        ? trimmed.slice(0, -referenceBlock.length).trimEnd()
+        : trimmed
 }
 
 function cloneTurns(turns: Turn[]): Turn[] {

@@ -53,6 +53,28 @@ export interface BoundaryContextOptions {
     assistantSummaries?: Record<string, string>
     prefixSummary?: string
     providerReportedTokens?: number
+    /**
+     * Token budget for the raw tail, expressed as a floor/ceiling pair. When
+     * provided, the whole-turn count-based tail is refined by tokens: the tail
+     * keeps at least `floor` tokens (snapped back to a user-turn boundary) and
+     * at most `ceiling` tokens (snapped forward to a turn boundary, preferring
+     * user turns). Turns are never split by the budget.
+     */
+    tailBudgetTokens?: { floor: number; ceiling: number }
+    /**
+     * Whether the planner may queue side-model summary jobs. `false` keeps the
+     * deterministic collapse: assistant runs still fold into their preview
+     * plus transcript pointer, they just never get an LLM-written body.
+     * Defaults to true.
+     */
+    summariesAllowed?: boolean
+    /**
+     * Whether the last-resort prefix summary may run when pruning alone cannot
+     * reach the trigger. `false` leaves `requiresCustomCompaction` unset and
+     * lets the caller decide between a rewrite-only or declined answer.
+     * Defaults to true.
+     */
+    prefixSummaryAllowed?: boolean
     // The snapshot this plan replaces. Replacement plans treat what the
     // prior plan already pruned as a monotonic floor: applied stages stay
     // applied, tool results the model already lost are not resurrected,

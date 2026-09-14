@@ -26,8 +26,18 @@ export interface StageContext {
     summaryJobs: BoundarySummaryJob[]
     // Planning selects runs to meet the target; replay reuses recorded keys.
     selectRuns: boolean
+    // The compacted turns before any stage ran, by key. Summary prompts read
+    // these so a run's reasoning reaches the summarizer even though the
+    // reasoning stage has already stripped it from the working copy.
+    sourceTurns: ReadonlyMap<string, Turn>
     targetTokens: number
     referenceTokens: number
+    /**
+     * Whether collapsing a run may queue a side-model summary job. `false`
+     * keeps the collapse but only writes the deterministic preview plus the
+     * transcript pointer. Defaults to true when omitted.
+     */
+    summariesAllowed?: boolean
 }
 
 export interface Stage {
@@ -99,6 +109,38 @@ export function findRawTailStartIndex(
         if (userTurns >= minUserTurns) return index
     }
     return Math.max(0, turns.length - Math.min(minTurns, turns.length))
+}
+
+// The token budget for the raw tail. The count-based tail protects a fixed
+// number of turns, so one long tool loop keeps thousands of messages raw and
+// leaves nothing to compact. With a budget the tail tracks tokens instead: at
+// most `ceiling` (the hard cap), opening on a user turn when one exists inside
+// the band that still holds `floor`. Turns are never split here; a final turn
+// larger than the ceiling stays alone and the caller may split it by item.
+export function findBudgetTailStartIndex(
+    turns: Turn[],
+    budget: { floor: number; ceiling: number },
+    codec: CodecOps,
+): number {
+    if (turns.length === 0) return 0
+    // suffix[index] is the token cost of keeping turns[index..end].
+    const suffix = new Array<number>(turns.length + 1).fill(0)
+    for (let index = turns.length - 1; index >= 0; index--) {
+        suffix[index] = suffix[index + 1] + codec.estimateTurns([turns[index]])
+    }
+
+    let start = turns.length - 1
+    while (start > 0 && suffix[start - 1] <= budget.ceiling) start--
+
+    // The first user turn at or after the cap is the only candidate: later
+    // ones open an even smaller tail, so if this one breaks the floor they all do.
+    for (let index = start; index < turns.length; index++) {
+        const turn = turns[index]
+        if (turn.role !== "user" || turn.ephemeral) continue
+        if (suffix[index] >= budget.floor) start = index
+        break
+    }
+    return start
 }
 
 export function findRecentToolCallTail(
@@ -181,6 +223,8 @@ export function turnText(turn: Turn): string {
 }
 
 export function formatPrefixSummary(turns: Turn[]): string {
+    // User instructions are the contract the session answers to: they carry
+    // through the summary byte-for-byte, never rewrapped or truncated.
     const userMessages = turns
         .filter((turn) => turn.role === "user" && !turn.ephemeral)
         .flatMap((turn) =>
@@ -189,9 +233,9 @@ export function formatPrefixSummary(turns: Turn[]): string {
                     (item): item is Extract<Item, { kind: "text" | "synthetic" }> =>
                         item.kind === "text" || item.kind === "synthetic",
                 )
-                .map((item) => item.text.trim()),
+                .map((item) => item.text),
         )
-        .filter(Boolean)
+        .filter((text) => text.trim().length > 0)
     const assistantFacts = turns
         .filter((turn) => turn.role === "assistant")
         .map((turn) => turnText(turn).trim())
@@ -202,7 +246,7 @@ export function formatPrefixSummary(turns: Turn[]): string {
         [],
         [],
         [],
-        userMessages.map(formatSummaryItem),
+        userMessages,
         assistantFacts.map(
             (text) => `Resume from prior assistant progress: ${formatSummaryItem(text)}`,
         ),
@@ -503,7 +547,9 @@ function selectAssistantRunsToSummarize(
     return selected
 }
 
-export function assistantGroups(turns: Turn[]): Array<{ key: string; turns: Turn[]; endIndex: number }> {
+export function assistantGroups(
+    turns: Turn[],
+): Array<{ key: string; turns: Turn[]; endIndex: number }> {
     const groups: Array<{ key: string; turns: Turn[]; endIndex: number }> = []
     let current: Turn[] = []
     const flush = (endIndex: number) => {
@@ -528,13 +574,14 @@ function collapseAssistantRun(group: Turn[], ctx: StageContext): Turn {
     const key = assistantRunKey(group)
     const assistantText = group.map(turnText).filter(Boolean).join("\n\n")
     const existingSummary = ctx.assistantSummaries[key]
-    if (!existingSummary) {
+    if (!existingSummary && ctx.summariesAllowed !== false) {
+        const source = group.map((turn) => ctx.sourceTurns.get(turn.key) ?? turn)
         ctx.summaryJobs.push({
             key,
             rangeStartMessageId: first.key,
             rangeEndMessageId: group.at(-1)?.key ?? first.key,
             transcriptRelativePath: ctx.transcriptRelativePath,
-            prompt: formatAssistantSummaryPrompt(group, ctx.transcriptRelativePath, ctx.codec),
+            prompt: formatAssistantSummaryPrompt(source, ctx.transcriptRelativePath, ctx.codec),
         })
     }
 

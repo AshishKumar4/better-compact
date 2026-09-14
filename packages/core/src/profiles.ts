@@ -1,11 +1,17 @@
 export type CompactionPreset = "light" | "moderate" | "max" | "custom"
-export type SummaryEffort = "inherit" | "low" | "medium" | "high" | "max"
+export type SummaryEffort = "inherit" | "low" | "medium" | "high" | "max" | "off"
 
 export interface CompactionCustomSettings {
     triggerPercent: number
     targetPercent: number
     recentToolTokens: number
     summarizerConcurrency: number
+    /**
+     * Whether the last-resort prefix summary may run when pruning alone cannot
+     * reach the target. Off by default: deterministic pruning is the answer
+     * until a user opts into the merge.
+     */
+    prefixSummary: boolean
 }
 
 export interface CompactionConfig {
@@ -26,6 +32,7 @@ export const COMPACTION_PRESETS: Record<Exclude<CompactionPreset, "custom">, Com
         targetPercent: 35,
         recentToolTokens: 40_000,
         summarizerConcurrency: 4,
+        prefixSummary: false,
     },
     moderate: {
         preset: "moderate",
@@ -33,6 +40,7 @@ export const COMPACTION_PRESETS: Record<Exclude<CompactionPreset, "custom">, Com
         targetPercent: 25,
         recentToolTokens: 30_000,
         summarizerConcurrency: 6,
+        prefixSummary: false,
     },
     max: {
         preset: "max",
@@ -40,6 +48,7 @@ export const COMPACTION_PRESETS: Record<Exclude<CompactionPreset, "custom">, Com
         targetPercent: 15,
         recentToolTokens: 12_000,
         summarizerConcurrency: 8,
+        prefixSummary: false,
     },
 }
 
@@ -48,6 +57,7 @@ export const DEFAULT_CUSTOM_COMPACTION: CompactionCustomSettings = {
     targetPercent: 35,
     recentToolTokens: 40_000,
     summarizerConcurrency: 4,
+    prefixSummary: false,
 }
 
 export function normalizeCompactionCustom(
@@ -71,6 +81,7 @@ export function normalizeCompactionCustom(
             16,
             DEFAULT_CUSTOM_COMPACTION.summarizerConcurrency,
         ),
+        prefixSummary: input?.prefixSummary === true,
     }
 }
 
@@ -84,7 +95,9 @@ export function resolveCompactionProfile(
         ...(override?.custom ?? {}),
     })
     if (preset === "custom") return { preset, ...custom }
-    return COMPACTION_PRESETS[preset]
+    // The prefix-summary opt-in is orthogonal to a preset's pruning numbers,
+    // so it carries through instead of being pinned to the preset's default.
+    return { ...COMPACTION_PRESETS[preset], prefixSummary: custom.prefixSummary }
 }
 
 export function normalizePreset(value: unknown): CompactionPreset {
@@ -94,7 +107,11 @@ export function normalizePreset(value: unknown): CompactionPreset {
 }
 
 export function normalizeSummaryEffort(value: unknown): SummaryEffort {
-    return value === "low" || value === "medium" || value === "high" || value === "max"
+    return value === "low" ||
+        value === "medium" ||
+        value === "high" ||
+        value === "max" ||
+        value === "off"
         ? value
         : "inherit"
 }

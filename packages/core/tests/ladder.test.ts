@@ -1519,7 +1519,10 @@ test("available summarizer rolls a prior prefix summary over only the newly comp
     ]) {
         assert.match(rollingJobs[0].prompt, new RegExp(header.replace(/[()]/g, "\\$&")))
     }
-    assert.match(rollingJobs[0].prompt, /Preserve exact paths, symbols, error strings, and IDs verbatim/)
+    assert.match(
+        rollingJobs[0].prompt,
+        /Preserve exact paths, symbols, error strings, and IDs verbatim/,
+    )
     assert.doesNotMatch(rollingJobs[0].prompt, /still raw later user/)
     assert.doesNotMatch(rollingJobs[0].prompt, /still raw latest user/)
     assert.equal(result.plan.prefixSummary, rolledSummary)
@@ -1673,11 +1676,13 @@ test("an oversized assistant text prefix is summarized without rewriting its raw
     assert.equal(transformedSource.items.at(-1), newest)
     assert.ok(
         transformedSource.items.some(
-            (item) =>
-                item.kind === "synthetic" && item.text.startsWith("[Assistant turn summary]"),
+            (item) => item.kind === "synthetic" && item.text.startsWith("[Assistant turn summary]"),
         ),
     )
-    assert.equal(transformedSource.items.some((item) => item === oldText), false)
+    assert.equal(
+        transformedSource.items.some((item) => item === oldText),
+        false,
+    )
 })
 
 test("advancing a split boundary does not reuse a partial assistant summary", () => {
@@ -1811,4 +1816,219 @@ test("a protected turn below the trigger stays whole even when it exceeds the ta
     assert.ok(plan)
     assert.equal(plan.rawTailStartMessageId, "msg-user-middle")
     assert.equal(plan.rawTailItemBoundary, undefined)
+})
+
+test("prefix summary keeps user prose verbatim and truncates assistant narration", () => {
+    const userText = "the constraint: never split a user turn\nsecond line: ship it\nthird: done"
+    const assistantText = "assistant narration ".repeat(2_000)
+    const turns = [
+        turn("msg-user-1", "user", [textItem("msg-user-1", userText)], 1),
+        turn(
+            "msg-assistant-1",
+            "assistant",
+            [
+                reasoningItem("msg-assistant-1", "r".repeat(2_000)),
+                textItem("msg-assistant-1", assistantText),
+                toolItem("msg-assistant-1", "read", "o".repeat(2_000)),
+            ],
+            2,
+        ),
+        turn("msg-user-2", "user", [textItem("msg-user-2", "and another thing")], 3),
+        turn(
+            "msg-assistant-tail",
+            "assistant",
+            [textItem("msg-assistant-tail", "tail stays " + "x".repeat(4_000))],
+            4,
+        ),
+        turn("msg-user-3", "user", [textItem("msg-user-3", "latest " + "u".repeat(4_000))], 5),
+    ]
+    const plan = buildPlan(
+        turns,
+        inputs({ contextLimit: 500, recentToolResultBudgetTokens: 0 }),
+        spec,
+    )
+    assert.ok(plan)
+    assert.equal(plan.requiresCustomCompaction, true)
+    assert.ok(plan.stages.some((stage) => stage.name === "prefix-summary"))
+
+    const summary = plan.prefixSummary
+    assert.ok(summary)
+    // User turns are the contract the session answers to: byte-for-byte,
+    // newlines included — no bullet rewrapping, no truncation.
+    assert.ok(summary.includes(userText))
+    // Assistant narration is previewed, not carried whole: a 40KB prose blob
+    // lands as a bounded "resume" line.
+    assert.ok(!summary.includes(assistantText))
+    assert.match(summary, /Resume from prior assistant progress:/)
+    assert.match(summary, /\[\.{3}omitted\]/)
+
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    assert.equal(transformed.at(-1)?.key, "msg-user-3")
+})
+
+test("summariesAllowed false collapses assistant runs without queuing summary jobs", () => {
+    const turns = buildMultiRunConversation()
+    const plan = buildPlan(
+        turns,
+        inputs({
+            contextLimit: 40_000,
+            recentToolResultBudgetTokens: 0,
+            summariesAllowed: false,
+        }),
+        spec,
+    )
+    assert.ok(plan)
+    // The stage still applies — the collapse is deterministic — but nothing
+    // is queued for the side model.
+    assert.ok(
+        plan.stages.some((stage) => stage.name === "assistant-runs" && stage.status === "applied"),
+    )
+    assert.equal(plan.summaryJobs.length, 0)
+
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    const collapsed = transformed.find((item) => item.key === "msg-assistant-big")
+    assert.ok(collapsed)
+    assert.ok(collapsed.items.every((item) => item.kind === "synthetic"))
+    const text = syntheticTextOf(collapsed)
+    // The deterministic preview plus the transcript pointer stand in for the
+    // summary body.
+    assert.match(text, /\[Assistant turn summary\]/)
+    assert.match(text, /Raw transcript:/)
+})
+
+test("prefixSummaryAllowed false leaves the prefix un-merged even when the target is unreachable", () => {
+    const turns = buildMultiRunConversation()
+    const plan = buildPlan(
+        turns,
+        inputs({
+            contextLimit: 500,
+            recentToolResultBudgetTokens: 0,
+            prefixSummaryAllowed: false,
+        }),
+        spec,
+    )
+    assert.ok(plan)
+    // The last resort is off: no prefix-summary stage, no custom compaction
+    // request — the caller chooses between a rewrite-only answer and a
+    // decline instead of a merged prefix it did not opt into.
+    assert.equal(plan.requiresCustomCompaction, false)
+    assert.ok(!plan.stages.some((stage) => stage.name === "prefix-summary"))
+
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    assert.ok(!transformed[0]?.key.startsWith("better_compact_summary_"))
+})
+
+test("prefixSummaryAllowed with the last resort preserves the prior merge behavior", () => {
+    const turns = buildMultiRunConversation()
+    const plan = buildPlan(
+        turns,
+        inputs({
+            contextLimit: 500,
+            recentToolResultBudgetTokens: 0,
+            prefixSummaryAllowed: true,
+        }),
+        spec,
+    )
+    assert.ok(plan)
+    assert.equal(plan.requiresCustomCompaction, true)
+    assert.ok(plan.stages.some((stage) => stage.name === "prefix-summary"))
+
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    assert.ok(transformed[0]?.key.startsWith("better_compact_summary_"))
+})
+
+test("summary prompts carry a run's reasoning even though the reasoning stage strips it first", () => {
+    // Reasoning is stripped before runs are keyed so plan and replay hash the
+    // same items; the summarizer must still see it, or the causal record of
+    // why the assistant did what it did is deleted rather than distilled.
+    const turns = buildMultiRunConversation()
+    const plan = buildPlan(
+        turns,
+        inputs({ contextLimit: 40_000, recentToolResultBudgetTokens: 0 }),
+        spec,
+    )
+    assert.ok(plan)
+    const job = plan.summaryJobs.find(
+        (candidate) => candidate.rangeStartMessageId === "msg-assistant-big",
+    )
+    assert.ok(job, "the big run must be selected for a summary")
+    assert.match(job.prompt, /big private reasoning/)
+
+    // The working prefix the plan committed has no reasoning left in it.
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    assert.ok(transformed.every((item) => item.items.every((part) => part.kind !== "reasoning")))
+})
+
+test("a tail token budget caps the raw tail even when the last user turns span far more", () => {
+    // One long tool loop after a user turn: the count-based tail keeps the
+    // whole loop raw and leaves nothing to compact. With a budget the ceiling
+    // wins, landing on a whole assistant turn inside the loop.
+    const turns: Turn[] = [turn("u-1", "user", [textItem("u-1", "start the loop")], 1)]
+    for (let index = 0; index < 40; index++) {
+        turns.push(
+            turn(
+                `a-${index}`,
+                "assistant",
+                [toolItem(`a-${index}`, "bash", `loop output ${index} `.repeat(200))],
+                2 + index,
+            ),
+        )
+    }
+    turns.push(turn("u-2", "user", [textItem("u-2", "keep going")], 100))
+    for (let index = 40; index < 80; index++) {
+        turns.push(
+            turn(
+                `a-${index}`,
+                "assistant",
+                [toolItem(`a-${index}`, "bash", `loop output ${index} `.repeat(200))],
+                2 + index,
+            ),
+        )
+    }
+    const budget = { floor: 2_000, ceiling: 6_000 }
+    const countBased = buildPlan(turns, inputs({ contextLimit: 30_000, force: true }), spec)
+    const budgeted = buildPlan(
+        turns,
+        inputs({ contextLimit: 30_000, force: true, tailBudgetTokens: budget }),
+        spec,
+    )
+    // Two user turns back is the whole session: nothing left to compact, so
+    // the count-based tail produces no plan at all — the original no-op loop.
+    assert.equal(countBased, null)
+    assert.ok(budgeted)
+    assert.ok(budgeted.rawTailStartIndex > 41, "the ceiling must cut inside the second loop")
+    assert.equal(budgeted.rawTailItemBoundary, undefined, "turns are never split by the budget")
+    const tail = turns.slice(budgeted.rawTailStartIndex)
+    assert.ok(codec.estimateTurns(tail) <= budget.ceiling)
+    assert.ok(
+        codec.estimateTurns(tail) + codec.estimateTurns([turns[budgeted.rawTailStartIndex - 1]]) >
+            budget.ceiling,
+    )
+})
+
+test("the budget opens the tail on a user turn when one lies inside the floor band", () => {
+    const turns: Turn[] = [turn("u-1", "user", [textItem("u-1", "older")], 1)]
+    for (let index = 0; index < 20; index++) {
+        turns.push(
+            turn(
+                `a-${index}`,
+                "assistant",
+                [textItem(`a-${index}`, "reply ".repeat(200))],
+                2 + index,
+            ),
+        )
+    }
+    turns.push(turn("u-2", "user", [textItem("u-2", "recent question")], 50))
+    turns.push(turn("a-last", "assistant", [textItem("a-last", "recent answer ".repeat(100))], 51))
+    const plan = buildPlan(
+        turns,
+        inputs({
+            contextLimit: 30_000,
+            force: true,
+            tailBudgetTokens: { floor: 300, ceiling: 3_000 },
+        }),
+        spec,
+    )
+    assert.ok(plan)
+    assert.equal(turns[plan.rawTailStartIndex]?.key, "u-2")
 })
