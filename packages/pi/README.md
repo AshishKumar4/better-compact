@@ -66,6 +66,34 @@ OMP runs `/better-compact` through its normal compaction lifecycle. The active o
 
 The trigger starts a pruning pass. The target is the desired context size after the pass.
 
+### Custom thresholds
+
+Choose `custom` in `/better-compact-settings` (or set `"preset": "custom"` in
+`better-compact.json`) to tune the numbers directly:
+
+```json
+{
+    "preset": "custom",
+    "custom": {
+        "triggerPercent": 70,
+        "targetPercent": 30,
+        "recentToolTokens": 20000,
+        "summarizerConcurrency": 4,
+        "prefixSummary": false
+    }
+}
+```
+
+The trigger must stay above the target; the settings panel refuses anything
+else. Values outside 1–99 (percents), 0–200000 (tool budget), or 1–16
+(concurrency) are refused the same way. `prefixSummary` allows the
+last-resort prefix merge when pruning alone cannot reach the target; it stays
+off unless set.
+
+After every committed compaction Better Compact prints what the ladder did —
+stages applied and tokens reclaimed — and keeps the full plan behind
+`/better-compact-report`.
+
 ## Configuration
 
 Create `<agent-dir>/better-compact.json`:

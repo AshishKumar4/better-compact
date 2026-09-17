@@ -93,6 +93,11 @@
                             "maximum": 16,
                             "default": 4,
                             "description": "Advanced maximum number of scratch summarizer sessions to run in parallel."
+                        },
+                        "prefixSummary": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Allow the last-resort prefix summary when pruning alone cannot reach the target."
                         }
                     }
                 }
@@ -105,7 +110,8 @@
                     "triggerPercent": 85,
                     "targetPercent": 35,
                     "recentToolTokens": 40000,
-                    "summarizerConcurrency": 4
+                    "summarizerConcurrency": 4,
+                    "prefixSummary": false
                 }
             }
         },

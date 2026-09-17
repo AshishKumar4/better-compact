@@ -80,6 +80,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "compaction.custom.targetPercent",
     "compaction.custom.recentToolTokens",
     "compaction.custom.summarizerConcurrency",
+    "compaction.custom.prefixSummary",
     "compress",
     "compress.permission",
 ])
@@ -183,7 +184,9 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
             }
             if (
                 compaction.summaryEffort !== undefined &&
-                !["inherit", "low", "medium", "high", "max", "off"].includes(compaction.summaryEffort)
+                !["inherit", "low", "medium", "high", "max", "off"].includes(
+                    compaction.summaryEffort,
+                )
             ) {
                 errors.push({
                     key: "compaction.summaryEffort",
@@ -195,13 +198,36 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
             const custom = compaction.custom
             if (custom !== undefined) {
                 if (typeof custom !== "object" || custom === null || Array.isArray(custom)) {
-                    errors.push({ key: "compaction.custom", expected: "object", actual: typeof custom })
+                    errors.push({
+                        key: "compaction.custom",
+                        expected: "object",
+                        actual: typeof custom,
+                    })
                 } else {
-                    for (const key of ["triggerPercent", "targetPercent", "recentToolTokens", "summarizerConcurrency"] as const) {
+                    for (const key of [
+                        "triggerPercent",
+                        "targetPercent",
+                        "recentToolTokens",
+                        "summarizerConcurrency",
+                    ] as const) {
                         const value = custom[key]
                         if (value !== undefined && typeof value !== "number") {
-                            errors.push({ key: `compaction.custom.${key}`, expected: "number", actual: typeof value })
+                            errors.push({
+                                key: `compaction.custom.${key}`,
+                                expected: "number",
+                                actual: typeof value,
+                            })
                         }
+                    }
+                    if (
+                        custom.prefixSummary !== undefined &&
+                        typeof custom.prefixSummary !== "boolean"
+                    ) {
+                        errors.push({
+                            key: "compaction.custom.prefixSummary",
+                            expected: "boolean",
+                            actual: typeof custom.prefixSummary,
+                        })
                     }
                 }
             }
@@ -322,10 +348,11 @@ export function loadGlobalCompactionConfig(): CompactionConfig {
 }
 
 export type SaveGlobalCompactionResult =
-    | { ok: true; path: string }
-    | { ok: false; path: string; error: string }
+    { ok: true; path: string } | { ok: false; path: string; error: string }
 
-export function saveGlobalCompactionConfig(compaction: CompactionConfig): SaveGlobalCompactionResult {
+export function saveGlobalCompactionConfig(
+    compaction: CompactionConfig,
+): SaveGlobalCompactionResult {
     const path = globalConfigPath()
     const temp = `${path}.${process.pid}.${Date.now()}.tmp`
     try {
@@ -362,6 +389,10 @@ export function saveGlobalCompactionConfig(compaction: CompactionConfig): SaveGl
             {
                 path: ["compaction", "custom", "summarizerConcurrency"],
                 value: normalized.custom.summarizerConcurrency,
+            },
+            {
+                path: ["compaction", "custom", "prefixSummary"],
+                value: normalized.custom.prefixSummary,
             },
         ]
         let updated = original

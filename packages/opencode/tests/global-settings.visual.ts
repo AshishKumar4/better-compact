@@ -76,6 +76,7 @@ test("global compaction save preserves JSONC comments and unrelated settings", a
             targetPercent: 30,
             recentToolTokens: 30_000,
             summarizerConcurrency: 4,
+            prefixSummary: false,
         },
     })
 })
@@ -134,10 +135,9 @@ test("runtime config disables automatic compaction when a discovered layer is un
     chmodSync(path, 0o000)
 
     const config = await import(`../lib/config.ts?unreadable-runtime=${Date.now()}`)
-    const loaded = config.getConfig(
-        { directory: root, worktree: root, client: {} } as never,
-        { warnings: false },
-    )
+    const loaded = config.getConfig({ directory: root, worktree: root, client: {} } as never, {
+        warnings: false,
+    })
 
     chmodSync(path, 0o600)
     expect(loaded.compaction.automatic).toBe(false)
