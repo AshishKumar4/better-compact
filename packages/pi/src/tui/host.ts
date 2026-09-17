@@ -35,13 +35,19 @@ export interface HostComponent {
     invalidate(): void
 }
 
-/** One row of a host `SettingsList`. */
-export interface HostSettingsItem {
+/** One row of a host `SettingsList`. `TComponent` is the host's own UI component. */
+export interface HostSettingsItem<TComponent = unknown> {
     id: string
     label: string
-    description: string
+    description?: string
     currentValue: string
-    values: string[]
+    values?: string[]
+    /**
+     * Numeric or free-text rows open this instead of cycling values. Receives
+     * the current value and a callback taking the typed value; returning the
+     * component renders it in the host's own primitives.
+     */
+    submenu?: (currentValue: string, done: (selectedValue?: string) => void) => TComponent
 }
 
 /**
@@ -51,11 +57,21 @@ export interface HostSettingsItem {
  * the host built, so the host's real `Component` type flows through untouched
  * instead of being flattened into {@link HostComponent}.
  */
-export interface HostSettingsUi<TComponent> {
+export interface HostSettingsUi<TList, TInput = TList> {
     createSettingsList(
-        items: HostSettingsItem[],
+        items: HostSettingsItem<TInput>[],
         visibleRows: number,
         onChange: (id: string, value: string) => void,
         onDone: () => void,
-    ): TComponent
+    ): TList
+    /**
+     * One-line text field for numeric and free-text setting rows. The field
+     * reports through `done`: submit passes the typed value, escape passes
+     * nothing, and the host forwards a value into the list's onChange.
+     */
+    createTextInput(
+        currentValue: string,
+        placeholder: string,
+        done: (value?: string) => void,
+    ): TInput
 }

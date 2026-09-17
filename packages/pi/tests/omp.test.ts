@@ -552,3 +552,55 @@ test("a host without the rewrite seam gets the pruned prefix as one durable summ
     assert.match(answer.compaction.summary, /please do task 0/)
     assert.equal(answer.tokensFreed, plan.beforeTokens - plan.afterPruneTokens)
 })
+
+test("snapcompact frame entries pass through a rewrite byte-identical", () => {
+    // A session that ran OMP snapcompact carries compactionSummary entries
+    // before the switch. They encode as opaque items the ladder never enters,
+    // and the rewrite leaves kinds it cannot stub untouched — so the frames
+    // survive every round exactly as the host wrote them.
+    const messages: PiMessage[] = [
+        userMessage("first task", 1),
+        {
+            role: "compactionSummary",
+            summary: "[frame archive]",
+            timestamp: 2,
+        } as unknown as PiMessage,
+        userMessage("second task", 3),
+        assistantMessage(
+            [
+                { type: "thinking", thinking: `loop reasoning ${"r".repeat(6_000)}` },
+                { type: "text", text: "Working." },
+                {
+                    type: "toolCall",
+                    id: "call_frame",
+                    name: "bash",
+                    arguments: { command: "frame" },
+                },
+            ],
+            { stopReason: "toolUse", timestamp: 4 },
+        ),
+        toolResultMessage("call_frame", `frame output ${"x".repeat(12_000)}`, { timestamp: 5 }),
+        userMessage("latest question", 6),
+    ]
+    const branch = branchOf(messages)
+    const { plan, turns } = planFor(messages, 8_000, {
+        tailBudgetTokens: { floor: 500, ceiling: 2_000 },
+    })
+    const answer = buildCompactionAnswer(
+        {
+            trigger: "manual",
+            plan,
+            turns,
+            messages: branch.messages,
+            branchEntries: branch.entries,
+        },
+        ompSpec,
+        { supportsRewrite: true },
+    )
+    assert.ok(answer?.rewrite)
+    const frame = messages[1]
+    assert.ok(!answer.rewrite.some(({ message }) => message === frame))
+    const frameByIndex = answer.rewrite.find(({ entryId }) => entryId === "entry-1")
+    assert.equal(frameByIndex, undefined)
+    assert.equal(branch.messages[1], frame)
+})

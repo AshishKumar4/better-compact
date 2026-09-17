@@ -9,7 +9,7 @@ import {
     type ExtensionAPI,
     type ExtensionContext,
 } from "@earendil-works/pi-coding-agent"
-import { SettingsList } from "@earendil-works/pi-tui"
+import { Input, SettingsList } from "@earendil-works/pi-tui"
 import { createPiFamilyCodec, piSpec } from "./codec"
 import { commandPreset, CONFIG_FILE, errorText } from "./config"
 import type { AssertHostRolesModelled } from "./messages"
@@ -34,9 +34,16 @@ const logger: Logger = {
     error: (message, data) => console.error(`[better-compact] ${message}`, data ?? ""),
 }
 
-const settingsUi: HostSettingsUi<SettingsList> = {
+const settingsUi: HostSettingsUi<SettingsList, Input> = {
     createSettingsList: (items, visibleRows, onChange, onDone) =>
         new SettingsList(items, visibleRows, getSettingsListTheme(), onChange, onDone),
+    createTextInput: (currentValue, placeholder, done) => {
+        const input = new Input({ prompt: `${placeholder} › ` })
+        input.setValue(currentValue)
+        input.onSubmit = (value) => done(value)
+        input.onEscape = () => done()
+        return input
+    },
 }
 
 /**
@@ -197,6 +204,7 @@ export default function betterCompact(pi: ExtensionAPI) {
                 automatic: result.config.automatic,
                 preset: result.config.preset,
                 summaryEffort: result.config.summaryEffort,
+                custom: result.config.custom,
             })
         },
     })

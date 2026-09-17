@@ -1,5 +1,6 @@
 import { join } from "node:path"
 import type { BuildPlanInputs, CompactionConfig, Logger } from "@better-compact/core"
+import { toPlanSnapshot } from "@better-compact/core"
 import {
     buildSessionContext,
     getAgentDir,
@@ -7,7 +8,7 @@ import {
     type ExtensionAPI,
     type ExtensionContext,
 } from "@oh-my-pi/pi-coding-agent"
-import { SettingsList } from "@oh-my-pi/pi-tui"
+import { Input, SettingsList } from "@oh-my-pi/pi-tui"
 import { commandPreset, CONFIG_FILE, errorText } from "./config"
 import { ompCodec, ompSpec } from "./omp/codec"
 import { buildCompactionAnswer, type CompactionTrigger } from "./omp/compaction"
@@ -85,9 +86,17 @@ const logger: Logger = {
     error: (message, data) => console.error(`[better-compact] ${message}`, data ?? ""),
 }
 
-const settingsUi: HostSettingsUi<SettingsList> = {
+const settingsUi: HostSettingsUi<SettingsList, Input> = {
     createSettingsList: (items, visibleRows, onChange, onDone) =>
         new SettingsList(items, visibleRows, getSettingsListTheme(), onChange, onDone),
+    createTextInput: (currentValue, placeholder, done) => {
+        const input = new Input()
+        input.prompt = `${placeholder} › `
+        input.setValue(currentValue)
+        input.onSubmit = (value) => done(value)
+        input.onEscape = () => done()
+        return input
+    },
 }
 
 /**
@@ -283,6 +292,17 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
                         finalPlan.beforeTokens - finalPlan.afterPruneTokens,
                     )
                     runtime.clearWidget(ctx)
+                    // The hook must answer inside its deadline, so the report
+                    // never renders here: the plan is persisted for
+                    // /better-compact-report and the hook stays notify-only.
+                    await runtime.plans.save(
+                        ctx.sessionManager.getSessionId(),
+                        toPlanSnapshot(finalPlan),
+                    )
+                    ctx.ui.notify(
+                        `Better Compact: ${finalPlan.stages.filter((stage) => stage.status === "applied").length}/${finalPlan.stages.length} stages, reclaimed ${formatTokens(reclaimed)} tokens (${formatTokens(finalPlan.afterPruneTokens)}/${formatTokens(contextLimit)}). See /better-compact-report.`,
+                        "info",
+                    )
                     const result: BetterCompactBeforeCompactResult = {}
                     if (final.rewrite) {
                         result.rewrite = final.rewrite.map(({ entryId, message }) => ({
@@ -411,6 +431,7 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
                     automatic: result.config.automatic,
                     preset: result.config.preset,
                     summaryEffort: result.config.summaryEffort,
+                    custom: result.config.custom,
                 },
                 ownerChanged
                     ? `Settings saved. Committed compaction will use ${result.compactionOwner} in new sessions; restart OMP to apply it here.`

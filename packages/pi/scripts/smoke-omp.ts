@@ -203,6 +203,7 @@ async function main(): Promise<void> {
         signal: AbortSignal.timeout(25_000),
     }
 
+    const notices = (): string[] => recorded.notices
     type Answer =
         | {
               cancel?: boolean
@@ -313,6 +314,11 @@ async function main(): Promise<void> {
     const recovery = (await call("session_before_compact", rewriteEvent)) as Answer
     assertRewrite(recovery, "overflow")
     assert.ok(recovery?.rewrite)
+    const stages = notices().filter((message) => message.includes("Better Compact:"))
+    assert.ok(
+        stages.some((message) => /stages.*reclaimed/.test(message)),
+        "the hook must notify the ladder report line, not block on it",
+    )
     label("overflow trigger returned an in-place Better Compact rewrite")
 
     // What the host does with that result: each named entry keeps its id,
