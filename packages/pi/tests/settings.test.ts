@@ -31,6 +31,7 @@ function config(): CompactionConfig {
             recentToolTokens: 40_000,
             summarizerConcurrency: 4,
             prefixSummary: false,
+            collapsePercent: 25,
         },
     }
 }
@@ -76,6 +77,7 @@ test("host-specific rows share the settings panel and receive changes", () => {
             "custom.targetPercent",
             "custom.recentToolTokens",
             "custom.summarizerConcurrency",
+            "custom.collapsePercent",
             "custom.prefixSummary",
             "ompCompactionOwner",
         ],
@@ -161,5 +163,6 @@ test("custom numeric rows accept in-range input and refuse dead configuration", 
         recentToolTokens: 40_000,
         summarizerConcurrency: 4,
         prefixSummary: true,
+        collapsePercent: 25,
     })
 })

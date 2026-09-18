@@ -68,4 +68,9 @@ export interface Conventions {
     // An extra line to preserve when an assistant run containing this item
     // is collapsed to a summary (OpenCode: patch parts).
     itemNote?(item: Item): string | null
+    // Items that already carry compacted history (a host compaction or branch
+    // summary replayed into context). Collapsing a run that holds one destroys
+    // the archive it stands for and there is nothing left to recover from, so
+    // a turn carrying one is never swept into an assistant-run summary.
+    isPreservedItem?(item: Item): boolean
 }

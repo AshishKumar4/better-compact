@@ -80,6 +80,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "compaction.custom.targetPercent",
     "compaction.custom.recentToolTokens",
     "compaction.custom.summarizerConcurrency",
+    "compaction.custom.collapsePercent",
     "compaction.custom.prefixSummary",
     "compress",
     "compress.permission",
@@ -209,6 +210,7 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
                         "targetPercent",
                         "recentToolTokens",
                         "summarizerConcurrency",
+                        "collapsePercent",
                     ] as const) {
                         const value = custom[key]
                         if (value !== undefined && typeof value !== "number") {
@@ -389,6 +391,10 @@ export function saveGlobalCompactionConfig(
             {
                 path: ["compaction", "custom", "summarizerConcurrency"],
                 value: normalized.custom.summarizerConcurrency,
+            },
+            {
+                path: ["compaction", "custom", "collapsePercent"],
+                value: normalized.custom.collapsePercent,
             },
             {
                 path: ["compaction", "custom", "prefixSummary"],

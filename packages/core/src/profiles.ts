@@ -12,6 +12,13 @@ export interface CompactionCustomSettings {
      * until a user opts into the merge.
      */
     prefixSummary: boolean
+    /**
+     * Ceiling on how much of the prefix one pass may collapse into assistant
+     * summaries, as a percentage of its collapsible turns. A pass that cannot
+     * reach the target within this cap stops there and leaves the rest to the
+     * host's own compaction; the next pass may collapse another slice.
+     */
+    collapsePercent: number
 }
 
 export interface CompactionConfig {
@@ -33,6 +40,7 @@ export const COMPACTION_PRESETS: Record<Exclude<CompactionPreset, "custom">, Com
         recentToolTokens: 40_000,
         summarizerConcurrency: 4,
         prefixSummary: false,
+        collapsePercent: 25,
     },
     moderate: {
         preset: "moderate",
@@ -41,6 +49,7 @@ export const COMPACTION_PRESETS: Record<Exclude<CompactionPreset, "custom">, Com
         recentToolTokens: 30_000,
         summarizerConcurrency: 6,
         prefixSummary: false,
+        collapsePercent: 35,
     },
     max: {
         preset: "max",
@@ -49,6 +58,7 @@ export const COMPACTION_PRESETS: Record<Exclude<CompactionPreset, "custom">, Com
         recentToolTokens: 12_000,
         summarizerConcurrency: 8,
         prefixSummary: false,
+        collapsePercent: 50,
     },
 }
 
@@ -58,6 +68,7 @@ export const DEFAULT_CUSTOM_COMPACTION: CompactionCustomSettings = {
     recentToolTokens: 40_000,
     summarizerConcurrency: 4,
     prefixSummary: false,
+    collapsePercent: 25,
 }
 
 export function normalizeCompactionCustom(
@@ -82,6 +93,10 @@ export function normalizeCompactionCustom(
             DEFAULT_CUSTOM_COMPACTION.summarizerConcurrency,
         ),
         prefixSummary: input?.prefixSummary === true,
+        collapsePercent: clampPercent(
+            input?.collapsePercent,
+            DEFAULT_CUSTOM_COMPACTION.collapsePercent,
+        ),
     }
 }
 

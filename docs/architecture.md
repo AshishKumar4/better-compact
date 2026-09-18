@@ -226,7 +226,11 @@ One daemon, `better-compact`, binding `127.0.0.1` on a fixed default port (e.g. 
 
 ## 5. Ladder generalization
 
-Universal stages, in ladder order: `tools-old` (with recent-tool budget) → `reasoning` → `tools-remaining` → `assistant-runs` (scored savings×age, background summaries) → `prefix-summary`, plus transcript write and reference injection. Platform-conditional: `skills` (needs `isSkillItem`), todo preservation inside the tool stages (needs `todo` convention).
+Universal stages, in ladder order: `tools-old` (with recent-tool budget) → `reasoning` → `tools-remaining` → `assistant-runs` → `prefix-summary`, plus transcript write and reference injection. Platform-conditional: `skills` (needs `isSkillItem`), todo preservation inside the tool stages (needs `todo` convention).
+
+`assistant-runs` ranks one assistant turn at a time by token size, largest first, and collapses only until the target is met — one LLM call buys the most tokens available, and a large turn never drags the turn beside it into the same summary. `collapsePercent` caps how much of the prefix a single pass may collapse; turns a prior plan already collapsed still count against what this pass needs but do not spend the cap, so successive passes go deeper without re-collapsing. A turn carrying an `isPreservedItem` (a host compaction or branch archive replayed into context) is never collapsible: it is the only copy of everything it stands for, and an opaque item offers no text for a summary to quote.
+
+`prefix-summary` is the last resort and off by default. Hosts that run their own compaction when the ladder falls short (Oh My Pi) disable it outright and hand the pass back instead.
 
 Composition is a declared stage array per adapter — data, not flags:
 

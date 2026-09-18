@@ -76,6 +76,7 @@ test("global compaction save preserves JSONC comments and unrelated settings", a
             targetPercent: 30,
             recentToolTokens: 30_000,
             summarizerConcurrency: 4,
+            collapsePercent: 25,
             prefixSummary: false,
         },
     })

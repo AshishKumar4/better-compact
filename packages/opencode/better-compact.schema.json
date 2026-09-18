@@ -52,13 +52,25 @@
                 },
                 "preset": {
                     "type": "string",
-                    "enum": ["light", "moderate", "max", "custom"],
+                    "enum": [
+                        "light",
+                        "moderate",
+                        "max",
+                        "custom"
+                    ],
                     "default": "light",
                     "description": "Compaction strength. light is Gentle, moderate is Balanced, max is Aggressive, and custom uses compaction.custom."
                 },
                 "summaryEffort": {
                     "type": "string",
-                    "enum": ["inherit", "low", "medium", "high", "max", "off"],
+                    "enum": [
+                        "inherit",
+                        "low",
+                        "medium",
+                        "high",
+                        "max",
+                        "off"
+                    ],
                     "default": "inherit",
                     "description": "Reasoning effort for scratch summaries. Unsupported effort levels fall back to the model default."
                 },
@@ -98,6 +110,13 @@
                             "type": "boolean",
                             "default": false,
                             "description": "Allow the last-resort prefix summary when pruning alone cannot reach the target."
+                        },
+                        "collapsePercent": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 99,
+                            "default": 25,
+                            "description": "Ceiling on how much of the old context one pass may replace with assistant summaries."
                         }
                     }
                 }
@@ -111,7 +130,8 @@
                     "targetPercent": 35,
                     "recentToolTokens": 40000,
                     "summarizerConcurrency": 4,
-                    "prefixSummary": false
+                    "prefixSummary": false,
+                    "collapsePercent": 25
                 }
             }
         },
@@ -137,7 +157,11 @@
             "properties": {
                 "permission": {
                     "type": "string",
-                    "enum": ["ask", "allow", "deny"],
+                    "enum": [
+                        "ask",
+                        "allow",
+                        "deny"
+                    ],
                     "default": "allow",
                     "description": "Permission mode for Better Compact commands"
                 }

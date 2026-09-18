@@ -66,6 +66,12 @@ export interface RuntimeHost<TCtx, TNative> {
      */
     tailBudgetTokens?: { floor: number; ceiling: number }
     /**
+     * False on hosts that run their own compaction when the ladder falls
+     * short: handing the pass back beats merging the prefix into one summary,
+     * so the last-resort rasterize is unreachable there.
+     */
+    allowsPrefixSummary?: boolean
+    /**
      * Where Better Compact's own config lives. `project` is the host's trust
      * decision made explicit: `null` means the project file is not read at all.
      */
@@ -152,7 +158,8 @@ export function createRuntime<TCtx, TNative>(
         targetRatio: profile.targetPercent / 100,
         recentToolResultBudgetTokens: profile.recentToolTokens,
         summariesAllowed: config.summaryEffort !== "off",
-        prefixSummaryAllowed: profile.prefixSummary === true,
+        prefixSummaryAllowed: host.allowsPrefixSummary !== false && profile.prefixSummary === true,
+        collapsePercent: profile.collapsePercent,
         tailBudgetTokens: host.tailBudgetTokens,
         sessionKey: host.sessionId(ctx),
         citablePath: transcripts(ctx).citablePath,
@@ -225,7 +232,9 @@ export function createRuntime<TCtx, TNative>(
                 recentToolResultBudgetTokens: profile.recentToolTokens,
                 providerReportedTokens: host.providerTokens(ctx),
                 summariesAllowed: config.summaryEffort !== "off",
-                prefixSummaryAllowed: profile.prefixSummary === true,
+                prefixSummaryAllowed:
+                    host.allowsPrefixSummary !== false && profile.prefixSummary === true,
+                collapsePercent: profile.collapsePercent,
                 tailBudgetTokens: host.tailBudgetTokens,
             })
             if (result.outcome === "unchanged") return undefined

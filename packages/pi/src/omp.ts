@@ -141,6 +141,10 @@ function createOmpHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, OmpAgent
             floor: KEEP_RECENT_TOKENS,
             ceiling: KEEP_RECENT_TOKENS * 3,
         },
+        // Oh My Pi runs its own configured method order when the ladder falls
+        // short, and handing the pass back beats merging the whole prefix into
+        // one summary — so the last-resort rasterize never runs here.
+        allowsPrefixSummary: false,
         // Oh My Pi exposes no extension-facing project-trust query, so only the
         // global file is read: a project file would be executable policy with
         // nothing vouching for the working tree.

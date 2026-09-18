@@ -1,6 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { buildPlan, type BoundaryContextPlan, type Turn } from "@better-compact/core"
+import {
+    buildPlan,
+    transformTurns,
+    type BoundaryContextPlan,
+    type Turn,
+} from "@better-compact/core"
 import {
     buildCompactionAnswer,
     COMPACTION_NO_PROGRESS_TOKENS,
@@ -454,19 +459,33 @@ test("prefixSummaryAllowed false answers the last resort with a rewrite, never a
 })
 
 test("the dead-band measures what the journal actually frees, not the plan's projection", () => {
-    // Hundreds of short assistant messages collapse to one summary in the
-    // projection, but a rewrite cannot delete entries: each becomes a stub
-    // nearly as long as the original. The projection clears the dead-band,
-    // the durable rewrite does not, and the honest answer is to decline.
-    const messages: PiMessage[] = [userMessage("chatter", 1)]
-    for (let index = 0; index < 400; index++) {
+    // One turn can carry an assistant message plus dozens of tool results.
+    // The projection collapses that whole turn into a single summary item,
+    // but a rewrite cannot delete entries: every tool result keeps its own
+    // entry as a stub. The projection therefore over-counts what the journal
+    // actually reclaims, and the dead-band has to measure the rewrite.
+    const calls = Array.from({ length: 40 }, (_, index) => ({
+        type: "toolCall" as const,
+        id: `call_${index}`,
+        name: "bash",
+        arguments: { command: `step ${index}` },
+    }))
+    const messages: PiMessage[] = [
+        userMessage("run the whole batch", 1),
+        assistantMessage([{ type: "text", text: "Running the batch." }, ...calls], {
+            stopReason: "toolUse",
+            timestamp: 2,
+        }),
+    ]
+    calls.forEach((call, index) => {
         messages.push(
-            assistantMessage([{ type: "text", text: `short note ${index} ${"n".repeat(80)}` }], {
-                timestamp: 2 + index,
+            toolResultMessage(call.id, `result ${index} ${"y".repeat(400)}`, {
+                timestamp: 3 + index,
             }),
         )
-    }
+    })
     messages.push(userMessage("and now the real question", 1_000))
+
     const branch = branchOf(messages)
     const { plan, turns } = planFor(messages, 4_000, {
         tailBudgetTokens: { floor: 500, ceiling: 1_500 },
@@ -476,7 +495,10 @@ test("the dead-band measures what the journal actually frees, not the plan's pro
         "the projection must clear the dead-band for this test to mean anything",
     )
     const rewrite = rewriteEntriesForPlan(plan, turns, branch.entries, ompSpec)
-    assert.ok(rewrite.tokensFreed < COMPACTION_NO_PROGRESS_TOKENS)
+    assert.ok(
+        rewrite.tokensFreed < COMPACTION_NO_PROGRESS_TOKENS,
+        "the durable rewrite must fall short of it, which is the whole point",
+    )
     assert.equal(
         buildCompactionAnswer(
             {
@@ -603,4 +625,75 @@ test("snapcompact frame entries pass through a rewrite byte-identical", () => {
     const frameByIndex = answer.rewrite.find(({ entryId }) => entryId === "entry-1")
     assert.equal(frameByIndex, undefined)
     assert.equal(branch.messages[1], frame)
+})
+
+test("a snapcompact archive survives the request transform with its text intact", () => {
+    // Regression: OMP's snapcompact leaves one compactionSummary message
+    // carrying everything it archived, including directives the user gave
+    // before that boundary. It encodes as a headless assistant turn holding a
+    // single opaque item, so collapsing that run used to drop the message and
+    // summarize it from empty text — deleting the only copy of the archive.
+    const frame = {
+        role: "compactionSummary",
+        summary: "Earlier turns archived. USER DIRECTIVE: always run the linter before pushing.",
+        images: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
+        timestamp: 1,
+    } as unknown as PiMessage
+    const messages: PiMessage[] = [frame]
+    let at = 10
+    for (let round = 0; round < 6; round++) {
+        messages.push(userMessage(`task ${round}`, at++))
+        messages.push(
+            assistantMessage(
+                [
+                    { type: "thinking", thinking: `reasoning ${round} ${"r".repeat(4_000)}` },
+                    { type: "text", text: `Working on ${round}. ${"narration ".repeat(1_200)}` },
+                    { type: "toolCall", id: `c${round}`, name: "bash", arguments: { cmd: "x" } },
+                ],
+                { stopReason: "toolUse", timestamp: at++ },
+            ),
+        )
+        messages.push(
+            toolResultMessage(`c${round}`, `out ${"x".repeat(8_000)}`, { timestamp: at++ }),
+        )
+        messages.push(
+            assistantMessage(
+                [{ type: "text", text: `done ${round}. ${"detail ".repeat(1_200)}` }],
+                { timestamp: at++ },
+            ),
+        )
+    }
+    messages.push(userMessage("latest question", 999))
+
+    const turns = piCodec.encode(messages)
+    // Deep pruning: the collapse stage must run for this to mean anything.
+    const plan = buildPlan(
+        turns,
+        {
+            contextLimit: 30_000,
+            triggerRatio: 0.05,
+            targetRatio: 0.02,
+            recentToolResultBudgetTokens: 0,
+            sessionKey: "session-1",
+            citablePath: (sessionKey, rangeHash) => `/s/${sessionKey}/${rangeHash}.md`,
+            force: true,
+            // Isolate the collapse path: the last-resort prefix merge is a
+            // separate rasterize with its own opt-in.
+            prefixSummaryAllowed: false,
+            tailBudgetTokens: { floor: 500, ceiling: 1_500 },
+        },
+        ompSpec,
+    )
+    assert.ok(plan)
+    assert.ok(
+        plan.stages.some((stage) => stage.name === "assistant-runs" && stage.status === "applied"),
+        "the collapse stage must apply for this regression to be exercised",
+    )
+
+    const out = piCodec.decode(
+        transformTurns(turns, plan.rawTailStartIndex, plan, ompSpec),
+        messages,
+    )
+    assert.ok(out.includes(frame), "the archive message must survive by identity")
+    assert.match(JSON.stringify(out), /always run the linter before pushing/)
 })

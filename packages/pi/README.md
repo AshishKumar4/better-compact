@@ -79,6 +79,7 @@ Choose `custom` in `/better-compact-settings` (or set `"preset": "custom"` in
         "targetPercent": 30,
         "recentToolTokens": 20000,
         "summarizerConcurrency": 4,
+        "collapsePercent": 25,
         "prefixSummary": false
     }
 }
@@ -86,9 +87,18 @@ Choose `custom` in `/better-compact-settings` (or set `"preset": "custom"` in
 
 The trigger must stay above the target; the settings panel refuses anything
 else. Values outside 1–99 (percents), 0–200000 (tool budget), or 1–16
-(concurrency) are refused the same way. `prefixSummary` allows the
-last-resort prefix merge when pruning alone cannot reach the target; it stays
-off unless set.
+(concurrency) are refused the same way.
+
+`collapsePercent` caps how much of the old context one pass may replace with
+assistant summaries (25/35/50 by preset). A pass that cannot reach the target
+within the cap stops there, and on Oh My Pi the remainder is handed to the
+host's configured `compaction.methodOrder`. Successive passes may collapse
+another slice, so nothing is lost by stopping early.
+
+`prefixSummary` allows the last-resort prefix merge when pruning alone cannot
+reach the target. It stays off unless set, and on Oh My Pi it never runs:
+handing the pass back to the host's own compaction beats merging the whole
+prefix into one summary.
 
 After every committed compaction Better Compact prints what the ladder did —
 stages applied and tokens reclaimed — and keeps the full plan behind
@@ -183,7 +193,7 @@ When Better Compact owns committed compaction, the pruned prefix keeps:
 
 - user turns as written;
 - dropped tool calls reduced to short action stubs;
-- selected assistant runs replaced by summaries;
+- the largest old assistant turns replaced by summaries, biggest first, only until the target is met;
 - a reference to the raw transcript on disk;
 - the recent tail unchanged, sized by a token budget rather than a turn count.
 

@@ -171,6 +171,7 @@ export function buildPlan(
         sourceTurns: new Map(compactedRange.map((turn) => [turn.key, turn])),
         targetTokens,
         referenceTokens: 0,
+        collapsePercent: inputs.collapsePercent,
         summariesAllowed: inputs.summariesAllowed !== false,
     }
     const prefixSummaryAllowed = inputs.prefixSummaryAllowed !== false
@@ -435,6 +436,7 @@ export interface Engine {
         tailBudgetTokens?: { floor: number; ceiling: number }
         summariesAllowed?: boolean
         prefixSummaryAllowed?: boolean
+        collapsePercent?: number
         force?: boolean
         // Side-model summary results for the automatic path. When a
         // fresh plan queues summary jobs, the engine runs them and rebuilds
@@ -458,6 +460,7 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
             tailBudgetTokens,
             summariesAllowed,
             prefixSummaryAllowed,
+            collapsePercent,
             force,
             summarize,
         }) {
@@ -480,6 +483,7 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
                 tailBudgetTokens,
                 summariesAllowed,
                 prefixSummaryAllowed,
+                collapsePercent,
                 force,
                 priorPlan,
                 sessionKey,
@@ -787,7 +791,9 @@ function synthesizeReferenceTurn(
     const first = compacted[0]?.key ?? "unknown"
     const last = compacted.at(-1)?.key ?? "unknown"
     const key = `better_compact_context_${hash}`
-    const runIndex = assistantGroups(compacted).map((group) => formatReferenceRun(group.turns, ctx))
+    const runIndex = assistantGroups(compacted, ctx.conventions).map((group) =>
+        formatReferenceRun(group.turns, ctx),
+    )
     const latestTodoState = formatLatestTodoState(compacted, ctx)
     return {
         key,

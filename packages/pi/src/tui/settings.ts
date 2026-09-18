@@ -24,7 +24,12 @@ export interface SettingsResult {
 
 /** Bounds every custom numeric row is parsed against before it is accepted. */
 const CUSTOM_NUMERIC: ReadonlyArray<{
-    key: "triggerPercent" | "targetPercent" | "recentToolTokens" | "summarizerConcurrency"
+    key:
+        | "triggerPercent"
+        | "targetPercent"
+        | "recentToolTokens"
+        | "summarizerConcurrency"
+        | "collapsePercent"
     label: string
     description: string
     min: number
@@ -57,6 +62,13 @@ const CUSTOM_NUMERIC: ReadonlyArray<{
         description: "How many assistant-run summaries may run at once.",
         min: 1,
         max: 16,
+    },
+    {
+        key: "collapsePercent",
+        label: "Max % of prefix summarized per pass",
+        description: "Ceiling on how much old context one pass may replace with summaries.",
+        min: 1,
+        max: 99,
     },
 ]
 

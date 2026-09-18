@@ -170,6 +170,9 @@ function parseCustomConfig(value: unknown): Partial<CompactionCustomSettings> {
     if (typeof value.prefixSummary === "boolean") {
         custom.prefixSummary = value.prefixSummary
     }
+    if (typeof value.collapsePercent === "number" && Number.isFinite(value.collapsePercent)) {
+        custom.collapsePercent = value.collapsePercent
+    }
     return custom
 }
 

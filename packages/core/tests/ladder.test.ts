@@ -410,8 +410,11 @@ test("reference turn indexes every compacted assistant run and surfaces the late
 
     const referenceText = syntheticTextOf(transformed[referenceIndex])
     const runLines = referenceText.split("\n").filter((line) => line.startsWith("- msg-assistant"))
+    // Each assistant turn is indexed on its own line, so a paid summary and
+    // its tool calls stay attached to the turn they came from.
     assert.deepEqual(runLines, [
-        "- msg-assistant-1 through msg-assistant-1b — read src/parser.ts, bash pnpm test — Implemented the parser change.",
+        "- msg-assistant-1 — read src/parser.ts — Implemented the parser change.",
+        "- msg-assistant-1b — bash pnpm test — (no assistant text)",
         "- msg-assistant-2 — grep needle, todowrite — Verified the edge case.",
     ])
     assert.equal(
@@ -792,7 +795,7 @@ test("planner preserves the active prompt during a single-user tool loop", () =>
     assert.doesNotMatch(transformedText, /first tool output|second tool output|third tool output/)
 })
 
-test("planner compactifies contiguous assistant turns within an old turn", () => {
+test("planner compactifies each contiguous assistant turn on its own", () => {
     const turns = [
         turn("msg-user-1", "user", [textItem("msg-user-1", "old turn")], 1),
         turn(
@@ -826,13 +829,18 @@ test("planner compactifies contiguous assistant turns within an old turn", () =>
 
     const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
 
+    // One turn is one selection unit: a large turn is summarized without
+    // dragging the turn beside it into the same summary, and each keeps its
+    // own key so a paid summary lands on the turn it describes.
     const oldAssistantTurns = transformed.filter(
         (item) => item.key === "msg-assistant-1" || item.key === "msg-assistant-2",
     )
-    assert.equal(oldAssistantTurns.length, 1)
-    const compactedText = syntheticTextOf(oldAssistantTurns[0])
+    assert.equal(oldAssistantTurns.length, 2)
+    const compactedText = oldAssistantTurns.map(syntheticTextOf).join("\n")
     assert.match(compactedText, /first assistant detail/)
-    assert.doesNotMatch(compactedText, /npm test/)
+    // The call is still named — that is what a stub is for — while the tool's
+    // bulk output is gone.
+    assert.match(compactedText, /\[tool:bash\]/)
     assert.doesNotMatch(compactedText, /build output/)
 })
 
@@ -2031,4 +2039,68 @@ test("the budget opens the tail on a user turn when one lies inside the floor ba
     )
     assert.ok(plan)
     assert.equal(turns[plan.rawTailStartIndex]?.key, "u-2")
+})
+
+test("selection takes the largest assistant turn first, regardless of age", () => {
+    // Size is the only ranking signal: summarizing a turn costs one LLM call
+    // either way, so the call must buy the most tokens available. Age used to
+    // weight this, which let a small old turn outrank a large recent one.
+    // Oldest turn is the smallest here, so age order is the inverse of size.
+    const turns: Turn[] = [
+        turn("u-1", "user", [textItem("u-1", "start")], 1),
+        turn("a-small-old", "assistant", [textItem("a-small-old", "small ".repeat(2_000))], 2),
+        turn("u-2", "user", [textItem("u-2", "next")], 3),
+        turn("a-large-new", "assistant", [textItem("a-large-new", "large ".repeat(20_000))], 4),
+        turn("u-3", "user", [textItem("u-3", "keep going")], 5),
+        turn("a-tail", "assistant", [textItem("a-tail", "tail")], 6),
+        turn("u-4", "user", [textItem("u-4", "latest")], 7),
+    ]
+
+    // A target the largest turn alone can satisfy, so selection stops there.
+    const plan = buildPlan(turns, inputs({ contextLimit: 60_000, force: true }), spec)
+    assert.ok(plan)
+    const selected = plan.summaryJobs.map((job) => job.rangeStartMessageId)
+    assert.deepEqual(selected, ["a-large-new"])
+})
+
+test("a collapse cap stops one pass early and leaves the rest above target", () => {
+    // The cap bounds how much history a single pass may replace with
+    // summaries. A pass that cannot reach the target within it stops there,
+    // which is what hands the remainder to the host's own compaction.
+    const turns: Turn[] = [turn("u-1", "user", [textItem("u-1", "start")], 1)]
+    for (let index = 0; index < 10; index++) {
+        turns.push(
+            turn(
+                `a-${index}`,
+                "assistant",
+                [textItem(`a-${index}`, `detail ${index} `.repeat(4_000))],
+                2 + index * 2,
+            ),
+        )
+        turns.push(
+            turn(
+                `u-${index + 2}`,
+                "user",
+                [textItem(`u-${index + 2}`, `next ${index}`)],
+                3 + index * 2,
+            ),
+        )
+    }
+    const options = { contextLimit: 30_000, force: true, targetRatio: 0.05 }
+
+    const uncapped = buildPlan(turns, inputs(options), spec)
+    const capped = buildPlan(turns, inputs({ ...options, collapsePercent: 20 }), spec)
+    assert.ok(uncapped && capped)
+
+    // A fifth of the collapsible prefix, so a couple of turns at most.
+    assert.ok(capped.assistantSummaryKeys.length >= 1)
+    assert.ok(capped.assistantSummaryKeys.length <= 2)
+    assert.ok(
+        capped.assistantSummaryKeys.length < uncapped.assistantSummaryKeys.length,
+        "the cap must bind before the uncapped pass stops",
+    )
+    assert.ok(
+        capped.afterPruneTokens > capped.targetTokens,
+        "a capped pass leaves the target unmet rather than collapsing further",
+    )
 })

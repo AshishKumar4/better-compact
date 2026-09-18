@@ -32,6 +32,8 @@ export interface StageContext {
     sourceTurns: ReadonlyMap<string, Turn>
     targetTokens: number
     referenceTokens: number
+    /** Percentage of collapsible prefix turns one pass may collapse; absent = uncapped. */
+    collapsePercent?: number
     /**
      * Whether collapsing a run may queue a side-model summary job. `false`
      * keeps the collapse but only writes the deterministic preview plus the
@@ -185,30 +187,22 @@ export function findLatestTodoCallId(turns: Turn[], conventions: Conventions): s
     return null
 }
 
+/** A turn holding already-compacted history, which collapsing would erase. */
+export function isPreservedTurn(turn: Turn, conventions: Conventions): boolean {
+    const isPreserved = conventions.isPreservedItem
+    return isPreserved !== undefined && turn.items.some((item) => isPreserved(item))
+}
+
 export function transformCompactedPrefix(turns: Turn[], ctx: StageContext): Turn[] {
-    const result: Turn[] = []
-    let assistantGroup: Turn[] = []
-
-    const flushAssistantGroup = () => {
-        if (assistantGroup.length === 0) return
-        if (!ctx.assistantSummaryKeys.has(assistantRunKey(assistantGroup))) {
-            result.push(...assistantGroup)
-        } else {
-            result.push(collapseAssistantRun(assistantGroup, ctx))
-        }
-        assistantGroup = []
-    }
-
-    for (const turn of turns) {
-        if (turn.role === "user") {
-            flushAssistantGroup()
-            result.push(turn)
-            continue
-        }
-        assistantGroup.push(turn)
-    }
-    flushAssistantGroup()
-    return result
+    // Same unit rule as assistantGroups: one collapsible turn, one key. The two
+    // must agree or a selected key finds nothing to collapse and the plan
+    // promises savings the applied output never delivers.
+    return turns.map((turn) => {
+        if (turn.role === "user" || isPreservedTurn(turn, ctx.conventions)) return turn
+        return ctx.assistantSummaryKeys.has(assistantRunKey([turn]))
+            ? collapseAssistantRun([turn], ctx)
+            : turn
+    })
 }
 
 export function turnText(turn: Turn): string {
@@ -494,7 +488,7 @@ function compactAssistantRuns(working: Turn[], ctx: StageContext): StageMutation
     const tail = working.slice(ctx.rawTailStartIndex)
     const changedTurns = new Set<string>()
     let changedItems = 0
-    for (const group of assistantGroups(compacted)) {
+    for (const group of assistantGroups(compacted, ctx.conventions)) {
         if (!ctx.assistantSummaryKeys.has(group.key)) continue
         let groupItems = 0
         for (const turn of group.turns) {
@@ -518,8 +512,10 @@ function selectAssistantRunsToSummarize(
         estimateTurns(allTurns, ctx.codec, ctx.estimator) + ctx.referenceTokens - ctx.targetTokens
     if (needed <= 0) return new Set()
 
-    let selectedSavings = 0
-    const groups = assistantGroups(compacted)
+    // Biggest first: the cost of a turn is the only thing that decides whether
+    // summarizing it is worth an LLM call. Age used to weight this, which let a
+    // small old turn outrank a large recent one and spent calls for little.
+    const candidates = assistantGroups(compacted, ctx.conventions)
         .map((group) => {
             const before = estimateTurns(group.turns, ctx.codec, { overheadTokens: 0 })
             const summaryText = group.turns.map(turnText).filter(Boolean).join("\n\n")
@@ -527,19 +523,27 @@ function selectAssistantRunsToSummarize(
                 1,
                 countTokens(truncate(summaryText, ASSISTANT_TEXT_PREVIEW_CHARS)),
             )
-            const savings = Math.max(0, Math.round(before - after))
-            const age = compacted.length <= 1 ? 1 : 1 - group.endIndex / (compacted.length - 1)
-            return {
-                ...group,
-                savings,
-                score: savings * (1 + age),
-            }
+            return { ...group, size: before, savings: Math.max(0, Math.round(before - after)) }
         })
         .filter((group) => group.savings > 0)
-        .sort((a, b) => b.score - a.score)
+        .sort((a, b) => b.size - a.size)
 
+    // A turn a prior plan already collapsed has delivered its savings, so it
+    // still counts against what this pass needs — it just does not spend the
+    // cap, which governs only newly collapsed turns.
+    let selectedSavings = candidates
+        .filter((group) => ctx.assistantSummaryKeys.has(group.key))
+        .reduce((total, group) => total + group.savings, 0)
     const selected = new Set<string>()
-    for (const group of groups) {
+    if (selectedSavings >= needed) return selected
+
+    const cap =
+        ctx.collapsePercent === undefined
+            ? candidates.length
+            : Math.max(1, Math.floor((candidates.length * ctx.collapsePercent) / 100))
+    for (const group of candidates) {
+        if (ctx.assistantSummaryKeys.has(group.key)) continue
+        if (selected.size >= cap) break
         selected.add(group.key)
         selectedSavings += group.savings
         if (selectedSavings >= needed) break
@@ -549,6 +553,7 @@ function selectAssistantRunsToSummarize(
 
 export function assistantGroups(
     turns: Turn[],
+    conventions?: Conventions,
 ): Array<{ key: string; turns: Turn[]; endIndex: number }> {
     const groups: Array<{ key: string; turns: Turn[]; endIndex: number }> = []
     let current: Turn[] = []
@@ -557,14 +562,14 @@ export function assistantGroups(
         groups.push({ key: assistantRunKey(current), turns: current, endIndex })
         current = []
     }
+    // One assistant turn is one unit: ranking by size only means anything when
+    // a huge turn cannot drag its small neighbours into the same summary.
+    // User turns and archive turns are never collapsible.
     turns.forEach((turn, index) => {
-        if (turn.role === "user") {
-            flush(index - 1)
-            return
-        }
+        if (turn.role === "user" || (conventions && isPreservedTurn(turn, conventions))) return
         current.push(turn)
+        flush(index)
     })
-    flush(turns.length - 1)
     return groups
 }
 

@@ -5,8 +5,14 @@ import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent"
 const SUMMARY_MAX_TOKENS = 8_192
 
 /**
- * Side-model transport: one non-streaming completion per job on the session's
- * current model, authenticated through Oh My Pi's own credential resolution.
+ * Side-model transport: one non-streaming completion per job, authenticated
+ * through Oh My Pi's own credential resolution.
+ *
+ * Summaries run on the `smol` role when the session resolves one. Distilling a
+ * historical turn is the cheapest work in the ladder, and paying the session
+ * model — the very model whose context this is reclaiming — for it is waste.
+ * An unresolved role falls back to the session model rather than skipping the
+ * summary, which would leave the deterministic preview in its place.
  *
  * Unlike the pi entry this imports `complete` from the canonical `@oh-my-pi/*`
  * scope directly — Oh My Pi's legacy-pi compatibility shim would resolve the
@@ -14,13 +20,13 @@ const SUMMARY_MAX_TOKENS = 8_192
  * compatibility layer is a dependency the adapter does not need.
  */
 export function createOmpSummarizer(
-    ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
+    ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "models">,
     logger: Logger,
     signal?: AbortSignal,
 ): Summarizer {
     return {
         async complete(job) {
-            const model = ctx.model
+            const model = ctx.models.resolve("@smol") ?? ctx.model
             if (!model) {
                 logger.warn("Better Compact summary skipped: no active model")
                 return null

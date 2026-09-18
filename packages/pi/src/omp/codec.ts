@@ -2,6 +2,7 @@ import type { LadderSpec } from "@better-compact/core"
 import {
     contentText,
     createPiFamilyCodec,
+    isPreservedItem,
     LADDER_STAGES,
     pairOf,
     piFamilyCodecOps,
@@ -33,6 +34,7 @@ export const ompSpec: LadderSpec = {
     codec: piFamilyCodecOps,
     conventions: {
         tool: toolConvention,
+        isPreservedItem,
         todo: {
             isTodoItem: (item) => item.kind === "tool" && pairOf(item).call.name === TODO_TOOL,
             format: (item) => {

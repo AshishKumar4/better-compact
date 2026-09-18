@@ -116,6 +116,17 @@ export const toolConvention = (item: Extract<Item, { kind: "tool" }>) => {
 }
 
 /**
+ * Host compaction and branch archives, replayed into context as one message.
+ * Everything they swallowed lives nowhere else, and an opaque item carries no
+ * text for a summary to quote, so collapsing the run that holds one erases the
+ * archive outright. Both pi-family specs mark them preserved.
+ */
+export const isPreservedItem = (item: Item): boolean =>
+    item.kind === "opaque" &&
+    isWholeMessage(item.handle) &&
+    (item.handle.role === "compactionSummary" || item.handle.role === "branchSummary")
+
+/**
  * Stage order shared by both pi-family hosts: prune what the model no longer
  * needs (superseded reads, stale failed inputs, old tool traffic), then old
  * thinking, then whole assistant runs. Reasoning is stripped before runs are
@@ -135,7 +146,7 @@ export const piSpec: LadderSpec = {
     codec: piFamilyCodecOps,
     // pi has no skill parts and its todo state lives in session details,
     // outside messages — nothing in-band to select or preserve.
-    conventions: { tool: toolConvention },
+    conventions: { tool: toolConvention, isPreservedItem },
     stages: LADDER_STAGES,
 }
 

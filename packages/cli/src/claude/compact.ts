@@ -170,9 +170,7 @@ function stubAttachments(entries: TranscriptEntry[], oldestKeptIndex: number): n
 function attachmentOf(entry: TranscriptEntry): AttachmentEntry | null {
     if (entry.type !== "attachment") return null
     const attachment = entry.attachment
-    return attachment && typeof attachment === "object"
-        ? (attachment as AttachmentEntry)
-        : null
+    return attachment && typeof attachment === "object" ? (attachment as AttachmentEntry) : null
 }
 
 // Attachments are part of what Claude Code sends, so they belong in the
@@ -195,7 +193,8 @@ function hasStubMarker(entry: TranscriptEntry): boolean {
     if (attachment) {
         for (const field of ATTACHMENT_PAYLOADS[String(attachment.type)]?.fields ?? []) {
             const value = attachment[field]
-            if (typeof value === "string" && value.startsWith("[better-compact: pruned")) return true
+            if (typeof value === "string" && value.startsWith("[better-compact: pruned"))
+                return true
         }
         return false
     }
@@ -212,7 +211,7 @@ function hasStubMarker(entry: TranscriptEntry): boolean {
         if (
             block.type === "tool_use" &&
             typeof (block.input as { pruned?: unknown } | undefined)?.pruned === "string" &&
-            ((block.input as { pruned: string }).pruned.startsWith("[better-compact: pruned"))
+            (block.input as { pruned: string }).pruned.startsWith("[better-compact: pruned")
         ) {
             return true
         }
@@ -329,6 +328,7 @@ export function summarizeTranscript(
             triggerRatio: profile.triggerPercent / 100,
             targetRatio: profile.targetPercent / 100,
             recentToolResultBudgetTokens: Math.min(profile.recentToolTokens, keepTailTokens),
+            collapsePercent: profile.collapsePercent,
             force: true,
             sessionKey: entries.find((e) => e.uuid)?.uuid ?? "claude-session",
             citablePath: () => "",
@@ -346,8 +346,7 @@ export function summarizeTranscript(
     if (keptUuids.length === 0) return null
 
     const preTokens = anthropicCodec.estimateTurns(turns)
-    const postTokens =
-        anthropicCodec.estimateTurns(tailTurns) + Math.round(summaryBody.length / 4)
+    const postTokens = anthropicCodec.estimateTurns(tailTurns) + Math.round(summaryBody.length / 4)
     const template = templateFields(entries)
     const now = options.now ?? new Date().toISOString()
     const summaryUuid = randomUUID()

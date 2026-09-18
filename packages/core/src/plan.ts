@@ -69,6 +69,12 @@ export interface BoundaryContextOptions {
      */
     summariesAllowed?: boolean
     /**
+     * Ceiling on how much of the prefix one pass may collapse into assistant
+     * summaries, as a percentage of its collapsible turns. Omitted leaves the
+     * pass uncapped.
+     */
+    collapsePercent?: number
+    /**
      * Whether the last-resort prefix summary may run when pruning alone cannot
      * reach the trigger. `false` leaves `requiresCustomCompaction` unset and
      * lets the caller decide between a rewrite-only or declined answer.
