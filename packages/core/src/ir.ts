@@ -1,15 +1,41 @@
 export type ItemKey = string
 
+// Why the ladder produced a synthetic item, and which INPUT items it stands
+// for. Sources are the keys the items carried before any stage ran, so a host
+// committing a transform as a durable mutation can attribute every output
+// item to real prior identities instead of parsing keys or rendered text.
+export type SynthesisOrigin =
+    // One pruned tool item, replaced by its one-line stub.
+    | "tool-stub"
+    // The latest todo state, kept as its own line because the tool item that
+    // carried it was pruned.
+    | "todo-state"
+    // One collapsed assistant run, as a preview or a side-model summary.
+    | "assistant-summary"
+    // The whole compacted prefix, folded into a single summary turn.
+    | "prefix-summary"
+    // The transcript reference index over the whole compacted range.
+    | "reference"
+
+export interface Synthesis {
+    origin: SynthesisOrigin
+    // Keys of the input items this stands for, in input order. Empty only
+    // when the range it covers was itself empty.
+    sources: readonly ItemKey[]
+}
+
 // Items are views with handles: every item encoded from a native message
 // carries its original native payload opaquely, and the codec re-emits
 // untouched handles verbatim on decode. Only `synthetic` items (ladder
-// output) have no handle; the codec renders them natively.
+// output) have no handle; the codec renders them natively. Every synthetic
+// item the ladder itself emits carries `provenance`; one a HOST synthesized
+// and handed back in does not, which is how the two are told apart.
 export type Item =
     | { kind: "text"; key: ItemKey; text: string; handle: unknown }
     | { kind: "reasoning"; key: ItemKey; handle: unknown }
     | { kind: "tool"; key: ItemKey; callId: string; handle: unknown }
     | { kind: "opaque"; key: ItemKey; handle: unknown }
-    | { kind: "synthetic"; key: ItemKey; text: string }
+    | { kind: "synthetic"; key: ItemKey; text: string; provenance?: Synthesis }
 
 export interface Turn {
     // Citable native identity (message id on platforms that have ids).

@@ -1,6 +1,6 @@
 import { countTokens, estimateTurns, truncate, type Estimator } from "./estimate"
 import { assistantRunKey, syntheticTextKey } from "./identity"
-import type { CodecOps, Conventions, Item, Turn } from "./ir"
+import type { CodecOps, Conventions, Item, ItemKey, Synthesis, SynthesisOrigin, Turn } from "./ir"
 import type { BoundaryStageName, BoundarySummaryJob } from "./plan"
 import { formatAssistantSummaryPrompt, formatSummarySections } from "./summarize"
 
@@ -366,7 +366,7 @@ function stripToolItems(
         if (!turn || turn.role !== "assistant") continue
         const nextItems: Item[] = []
         let removedTools = 0
-        let latestTodoState: string | null = null
+        let latestTodo: { text: string; source: ItemKey } | null = null
 
         for (const item of turn.items) {
             if (item.kind !== "tool") {
@@ -378,13 +378,25 @@ function stripToolItems(
                 continue
             }
             if (todo?.isTodoItem(item) && item.callId === latestTodoCallId) {
-                latestTodoState = `Latest todo state preserved: ${todo.format(item)}`
+                latestTodo = {
+                    text: `Latest todo state preserved: ${todo.format(item)}`,
+                    source: item.key,
+                }
             }
             nextItems.push(toolStub(item, ctx.conventions))
             removedTools++
         }
 
-        if (latestTodoState) nextItems.push(syntheticText(turn, latestTodoState))
+        if (latestTodo) {
+            nextItems.push(
+                synthesize(
+                    syntheticTextKey(turn.key, latestTodo.text),
+                    latestTodo.text,
+                    "todo-state",
+                    [latestTodo.source],
+                ),
+            )
+        }
         if (removedTools > 0) {
             turn.items = nextItems
             changedTurns.add(turn.key)
@@ -407,7 +419,7 @@ function toolStub(
         outcomeOverride ??
         (details?.error === undefined ? "ok" : `error: ${firstLine(details.error)}`)
     const text = `[tool:${name}] ${target} — ${outcome}`
-    return { kind: "synthetic", key: syntheticTextKey(item.key, text), text }
+    return synthesize(syntheticTextKey(item.key, text), text, "tool-stub", [item.key])
 }
 
 export function primaryToolTarget(input: unknown): { display: string; normalized: string } | null {
@@ -579,8 +591,11 @@ function collapseAssistantRun(group: Turn[], ctx: StageContext): Turn {
     const key = assistantRunKey(group)
     const assistantText = group.map(turnText).filter(Boolean).join("\n\n")
     const existingSummary = ctx.assistantSummaries[key]
+    // The pre-stage turns: the summary prompt reads them so stripped reasoning
+    // still reaches the summarizer, and provenance reads them so the sources
+    // are the ORIGINAL item keys rather than the stubs earlier stages left.
+    const source = group.map((turn) => ctx.sourceTurns.get(turn.key) ?? turn)
     if (!existingSummary && ctx.summariesAllowed !== false) {
-        const source = group.map((turn) => ctx.sourceTurns.get(turn.key) ?? turn)
         ctx.summaryJobs.push({
             key,
             rangeStartMessageId: first.key,
@@ -618,15 +633,35 @@ function collapseAssistantRun(group: Turn[], ctx: StageContext): Turn {
         role: first.role,
         handle: first.handle,
         items: [
-            {
-                kind: "synthetic",
-                key: `${first.key}_better_compact_compactified`,
-                text: lines.join("\n"),
-            },
+            synthesize(
+                `${first.key}_better_compact_compactified`,
+                lines.join("\n"),
+                "assistant-summary",
+                itemKeysOf(source),
+            ),
         ],
     }
 }
 
-function syntheticText(turn: Turn, text: string): Item {
-    return { kind: "synthetic", key: syntheticTextKey(turn.key, text), text }
+/**
+ * The one place the ladder mints a synthetic item. Its return type REQUIRES
+ * provenance, so a synthesis site that routes through it cannot forget to say
+ * what the item stands for. That is as far as the compiler goes: the field is
+ * optional on `Item` so a host may hand its own synthetic back, which means a
+ * bare literal inside this package would still typecheck. Nothing here stops
+ * that — `ladder.test.ts` asserts every synthetic in a transform carries
+ * provenance, and that assertion is what actually holds the invariant.
+ */
+export function synthesize(
+    key: ItemKey,
+    text: string,
+    origin: SynthesisOrigin,
+    sources: readonly ItemKey[],
+): Extract<Item, { kind: "synthetic" }> & { provenance: Synthesis } {
+    return { kind: "synthetic", key, text, provenance: { origin, sources } }
+}
+
+/** Input item keys of these turns, in input order. */
+export function itemKeysOf(turns: readonly Turn[]): ItemKey[] {
+    return turns.flatMap((turn) => turn.items.map((item) => item.key))
 }

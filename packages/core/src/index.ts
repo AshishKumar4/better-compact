@@ -1,4 +1,13 @@
-export type { Codec, CodecOps, Conventions, Item, ItemKey, Turn } from "./ir"
+export type {
+    Codec,
+    CodecOps,
+    Conventions,
+    Item,
+    ItemKey,
+    Synthesis,
+    SynthesisOrigin,
+    Turn,
+} from "./ir"
 export { contentHashKey, keyDeduper, rangeHash } from "./identity"
 export { countTokens, truncate, type Estimator } from "./estimate"
 export { isContextOverflowError } from "./overflow"

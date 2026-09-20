@@ -20,6 +20,7 @@ import {
     type Item,
     type LadderSpec,
     type PlanSnapshot,
+    type SynthesisOrigin,
     type Turn,
 } from "@better-compact/core"
 
@@ -2103,4 +2104,341 @@ test("a collapse cap stops one pass early and leaves the rest above target", () 
         capped.afterPruneTokens > capped.targetTokens,
         "a capped pass leaves the target unmet rather than collapsing further",
     )
+})
+
+// ── synthesis provenance ──────────────────────────────────────────────────
+//
+// Every synthetic item the ladder emits declares WHY it exists and WHICH input
+// items it stands for. A host that commits a transform as a durable mutation
+// reads these instead of parsing synthetic keys or rendered text, so the
+// sources must be the keys the items carried on the way IN — never the stub
+// keys an earlier stage left behind, and never a position or hash guess.
+
+function syntheticItems(turns: Turn[]): Array<Extract<Item, { kind: "synthetic" }>> {
+    return turns
+        .flatMap((candidate) => candidate.items)
+        .filter((item): item is Extract<Item, { kind: "synthetic" }> => item.kind === "synthetic")
+}
+
+function sourcesOfOrigin(turns: Turn[], origin: SynthesisOrigin): string[] {
+    return syntheticItems(turns)
+        .filter((item) => item.provenance?.origin === origin)
+        .flatMap((item) => [...(item.provenance?.sources ?? [])])
+}
+
+test("every synthetic the ladder emits declares an origin and real input sources", () => {
+    const turns = buildLargeConversation()
+    const plan = buildPlan(turns, inputs({ contextLimit: 30_000 }), spec)
+    assert.ok(plan)
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    const inputKeys = new Set(turns.flatMap((entry) => entry.items.map((item) => item.key)))
+    const emitted = syntheticItems(transformed)
+    assert.ok(emitted.length > 0, "the fixture must actually synthesize something")
+
+    for (const item of emitted) {
+        const provenance = item.provenance
+        assert.ok(provenance, `synthetic ${item.key} carries no provenance`)
+        assert.ok(provenance.sources.length > 0, `synthetic ${item.key} claims no source`)
+        for (const source of provenance.sources) {
+            assert.ok(
+                inputKeys.has(source),
+                `source ${source} of ${item.key} is not an input item key`,
+            )
+        }
+    }
+})
+
+test("a tool stub names exactly the tool item it replaced", () => {
+    const turns = buildLargeConversation()
+    const plan = buildPlan(turns, inputs({ contextLimit: 30_000 }), spec)
+    assert.ok(plan)
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    const stubs = syntheticItems(transformed).filter(
+        (item) => item.provenance?.origin === "tool-stub",
+    )
+    assert.ok(stubs.length > 0, "the fixture must strip at least one tool item")
+    for (const stub of stubs) {
+        assert.equal(stub.provenance?.sources.length, 1, "a stub stands for one tool item")
+    }
+
+    // The mapping is the real item, not a key parsed back out of the stub's own
+    // key: every named source is a tool item that was in the input.
+    const toolKeys = new Set(
+        turns.flatMap((entry) =>
+            entry.items.filter((item) => item.kind === "tool").map((item) => item.key),
+        ),
+    )
+    for (const source of sourcesOfOrigin(transformed, "tool-stub")) {
+        assert.ok(toolKeys.has(source), `${source} is not a tool item of the input`)
+    }
+})
+
+test("the reference turn indexes the whole compacted range and prunes without any summary", () => {
+    const turns = buildLargeConversation()
+    // summariesAllowed false is the deterministic path: pruning happens, no
+    // side-model call is queued, and the reference still has to be attributable.
+    const plan = buildPlan(
+        turns,
+        inputs({ contextLimit: 30_000, summariesAllowed: false, prefixSummaryAllowed: false }),
+        spec,
+    )
+    assert.ok(plan)
+    assert.deepEqual(plan.summaryJobs, [])
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    const reference = syntheticItems(transformed).filter(
+        (item) => item.provenance?.origin === "reference",
+    )
+    assert.equal(reference.length, 1)
+
+    const compactedRange = turns.slice(0, plan.rawTailStartIndex)
+    assert.deepEqual(
+        [...(reference[0].provenance?.sources ?? [])],
+        compactedRange.flatMap((entry) => entry.items.map((item) => item.key)),
+        "the reference stands for the compacted range, in input order",
+    )
+})
+
+test("an assistant summary names the pre-stage items, not the stubs left in its place", () => {
+    const turns = buildMultiRunConversation()
+    const plan = buildPlan(turns, inputs({ contextLimit: 40_000, force: true }), spec)
+    assert.ok(plan)
+    // Feed the summaries back so the collapse runs with real bodies, exactly as
+    // the engine's second pass does.
+    const summaries = Object.fromEntries(
+        plan.summaryJobs.map((job) => [job.key, `SUMMARY ${job.rangeStartMessageId}`]),
+    )
+    const settled =
+        buildPlan(
+            turns,
+            inputs({
+                contextLimit: 40_000,
+                force: true,
+                priorPlan: toPlanSnapshot(plan),
+                assistantSummaries: summaries,
+            }),
+            spec,
+        ) ?? plan
+    const transformed = transformTurns(turns, settled.rawTailStartIndex, settled, spec)
+
+    const collapsed = syntheticItems(transformed).filter(
+        (item) => item.provenance?.origin === "assistant-summary",
+    )
+    assert.ok(collapsed.length > 0, "the fixture must collapse at least one assistant turn")
+
+    for (const item of collapsed) {
+        // The collapsed turn keeps the key of the turn it replaced, so the
+        // sources must be exactly that turn's ORIGINAL items — reasoning and
+        // tool items included, even though earlier stages already removed or
+        // stubbed them in the working copy.
+        const owner = transformed.find((entry) => entry.items.includes(item))
+        assert.ok(owner)
+        const original = turns.find((entry) => entry.key === owner.key)
+        assert.ok(original, `no input turn for collapsed ${owner.key}`)
+        assert.deepEqual(
+            [...(item.provenance?.sources ?? [])],
+            original.items.map((source) => source.key),
+        )
+    }
+})
+
+test("the prefix summary names every input item of the range it merged", () => {
+    // The shape the last-resort merge actually fires on: fat user prose that
+    // no prune stage can touch, so pruning cannot reach the target.
+    const turns = [
+        turn("msg-user-1", "user", [textItem("msg-user-1", "the constraint: ship it")], 1),
+        turn(
+            "msg-assistant-1",
+            "assistant",
+            [
+                reasoningItem("msg-assistant-1", "r".repeat(2_000)),
+                textItem("msg-assistant-1", "assistant narration ".repeat(2_000)),
+                toolItem("msg-assistant-1", "read", "o".repeat(2_000)),
+            ],
+            2,
+        ),
+        turn("msg-user-2", "user", [textItem("msg-user-2", "and another thing")], 3),
+        turn(
+            "msg-assistant-tail",
+            "assistant",
+            [textItem("msg-assistant-tail", "tail stays " + "x".repeat(4_000))],
+            4,
+        ),
+        turn("msg-user-3", "user", [textItem("msg-user-3", "latest " + "u".repeat(4_000))], 5),
+    ]
+    const plan = buildPlan(
+        turns,
+        inputs({ contextLimit: 500, recentToolResultBudgetTokens: 0 }),
+        spec,
+    )
+    assert.ok(plan)
+    assert.ok(plan.requiresCustomCompaction)
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    const merged = syntheticItems(transformed).filter(
+        (item) => item.provenance?.origin === "prefix-summary",
+    )
+    assert.equal(merged.length, 1)
+    assert.deepEqual(
+        [...(merged[0].provenance?.sources ?? [])],
+        turns
+            .slice(0, plan.rawTailStartIndex)
+            .flatMap((entry) => entry.items.map((item) => item.key)),
+    )
+})
+
+test("preserved todo state names the todo tool item it was rescued from", () => {
+    const bigOutput = "tool-output ".repeat(4_000)
+    const todoInput = {
+        todos: [{ content: "ship the ladder", status: "in_progress", priority: "high" }],
+    }
+    const turns: Turn[] = [
+        turn("u-1", "user", [textItem("u-1", "start the work")], 1),
+        turn(
+            "a-1",
+            "assistant",
+            [
+                toolItem("a-1", "read", bigOutput),
+                toolItem("a-1", "todowrite", "recorded", todoInput),
+            ],
+            2,
+        ),
+        turn("u-2", "user", [textItem("u-2", "carry on")], 3),
+        turn("a-2", "assistant", [toolItem("a-2", "read", bigOutput)], 4),
+        turn("u-3", "user", [textItem("u-3", "and again")], 5),
+        turn("a-3", "assistant", [textItem("a-3", "done")], 6),
+        turn("u-4", "user", [textItem("u-4", "latest ask")], 7),
+    ]
+
+    const plan = buildPlan(turns, inputs({ contextLimit: 12_000, force: true }), spec)
+    assert.ok(plan)
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    const todoSources = sourcesOfOrigin(transformed, "todo-state")
+    assert.deepEqual(todoSources, ["a-1-todowrite"])
+})
+
+test("synthesis paths stay disjoint: one origin per item, and only todo state shares a source", () => {
+    // Several synthesis kinds fire in one pass. Each output item must carry
+    // exactly one origin, and no input item may be claimed by two in-prefix
+    // synthetics — except the todo item, which deliberately produces both its
+    // own stub line and the rescued state line.
+    const bigOutput = "tool-output ".repeat(4_000)
+    const todoInput = {
+        todos: [{ content: "ship the ladder", status: "in_progress", priority: "high" }],
+    }
+    const turns: Turn[] = [
+        turn("u-1", "user", [textItem("u-1", "start the work")], 1),
+        turn(
+            "a-1",
+            "assistant",
+            [
+                reasoningItem("a-1", "private ".repeat(2_000)),
+                toolItem("a-1", "read", bigOutput),
+                toolItem("a-1", "todowrite", "recorded", todoInput),
+            ],
+            2,
+        ),
+        turn("u-2", "user", [textItem("u-2", "carry on")], 3),
+        turn("a-2", "assistant", [textItem("a-2", "narration ".repeat(6_000))], 4),
+        turn("u-3", "user", [textItem("u-3", "and again")], 5),
+        turn("a-3", "assistant", [textItem("a-3", "done")], 6),
+        turn("u-4", "user", [textItem("u-4", "latest ask")], 7),
+    ]
+
+    const plan = buildPlan(turns, inputs({ contextLimit: 12_000, force: true }), spec)
+    assert.ok(plan)
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    const origins = new Set(syntheticItems(transformed).map((item) => item.provenance?.origin))
+    assert.ok(origins.size >= 3, `expected several synthesis kinds, saw ${[...origins].join(",")}`)
+
+    // The reference is the one deliberate aggregate over the whole range, so it
+    // is excluded from the partition check.
+    const inPrefix = syntheticItems(transformed).filter(
+        (item) => item.provenance?.origin !== "reference",
+    )
+    const claims = new Map<string, SynthesisOrigin[]>()
+    for (const item of inPrefix) {
+        const provenance = item.provenance
+        assert.ok(provenance, `synthetic ${item.key} carries no provenance`)
+        for (const source of provenance.sources) {
+            claims.set(source, [...(claims.get(source) ?? []), provenance.origin])
+        }
+    }
+    for (const [source, origins_] of claims) {
+        if (origins_.length === 1) continue
+        assert.deepEqual(
+            origins_.slice().sort(),
+            ["todo-state", "tool-stub"],
+            `${source} is claimed by more than one synthesis: ${origins_.join(",")}`,
+        )
+    }
+})
+
+test("a surviving native item keeps its handle by identity and gains no provenance", () => {
+    const turns = buildLargeConversation()
+    const plan = buildPlan(turns, inputs({ contextLimit: 30_000 }), spec)
+    assert.ok(plan)
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    // Provenance is a property of what the LADDER made. Anything that merely
+    // survived re-emits with the same native handle object and no new field,
+    // so a codec's decode still round-trips it verbatim.
+    for (const entry of transformed) {
+        for (const item of entry.items) {
+            if (item.kind === "synthetic") continue
+            assert.ok("provenance" in item === false)
+            const original = turns
+                .flatMap((source) => source.items)
+                .find(
+                    (source): source is Exclude<Item, { kind: "synthetic" }> =>
+                        source.kind !== "synthetic" && source.key === item.key,
+                )
+            assert.ok(original, `unknown item ${item.key} in the output`)
+            assert.equal(item.handle, original.handle, "native handles re-emit by identity")
+        }
+    }
+})
+
+test("a split turn's provenance stops at the item boundary and never claims the raw suffix", () => {
+    // The critical case for item-level boundaries: the compacted fragment keeps
+    // the ORIGINAL turn key, so a `sourceTurns` lookup that resolved the whole
+    // turn instead of the fragment would hand the summary an item the model can
+    // still see. Sources must stop exactly where the raw tail starts.
+    const oldText = textItem("msg-assistant-text-old", "old assistant detail ".repeat(3_000))
+    const newest = textItem("msg-assistant-text-new", "newest assistant conclusion")
+    const source = turn("msg-assistant-text", "assistant", [oldText, newest], 1)
+    const turns = [
+        source,
+        turn("msg-user-new", "user", [textItem("msg-user-new", "latest request")], 2),
+    ]
+
+    const plan = buildPlan(turns, inputs({ contextLimit: 10_000 }), spec)
+    assert.ok(plan)
+    assert.deepEqual(plan.rawTailItemBoundary, { itemKey: newest.key, side: "before" })
+    const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+
+    // `newest` survives raw, by identity, in the same turn it started in.
+    const rebuilt = transformed.find((candidate) => candidate.handle === source.handle)
+    assert.ok(rebuilt)
+    assert.equal(rebuilt.items.at(-1), newest)
+
+    const emitted = syntheticItems(transformed)
+    assert.ok(emitted.length > 0)
+    for (const item of emitted) {
+        const provenance = item.provenance
+        assert.ok(provenance, `synthetic ${item.key} carries no provenance`)
+        assert.ok(
+            !provenance.sources.includes(newest.key),
+            `${provenance.origin} claims ${newest.key}, which stayed raw in the protected tail`,
+        )
+    }
+
+    // Positively: the collapsed fragment stands for exactly the compacted item.
+    const collapsed = emitted.filter((item) => item.provenance?.origin === "assistant-summary")
+    assert.equal(collapsed.length, 1)
+    assert.deepEqual([...(collapsed[0].provenance?.sources ?? [])], [oldText.key])
 })
