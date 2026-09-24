@@ -79,11 +79,26 @@ interface BetterCompactBeforeCompactResult {
     }
     rewrite?: { entryId: string; message: OmpAgentMessage }[]
 }
-const logger: Logger = {
-    info() {},
-    debug() {},
-    warn: (message, data) => console.error(`[better-compact] ${message}`, data ?? ""),
-    error: (message, data) => console.error(`[better-compact] ${message}`, data ?? ""),
+/**
+ * Warnings go to Oh My Pi's file logger. Writing them to stderr instead lands
+ * outside the TUI renderer and paints over the status line until the next
+ * full repaint — a burst of failed background summaries then smears the
+ * screen while the chat itself is unaffected.
+ */
+function fileLogger(pi: ExtensionAPI): Logger {
+    return {
+        info() {},
+        debug() {},
+        warn: (message, data) => pi.logger.warn(`[better-compact] ${message}`, logContext(data)),
+        error: (message, data) => pi.logger.error(`[better-compact] ${message}`, logContext(data)),
+    }
+}
+
+function logContext(data: unknown): Record<string, unknown> | undefined {
+    if (data === undefined) return undefined
+    return data !== null && typeof data === "object" && !Array.isArray(data)
+        ? Object.fromEntries(Object.entries(data))
+        : { data }
 }
 
 const settingsUi: HostSettingsUi<SettingsList, Input> = {
@@ -106,7 +121,10 @@ const settingsUi: HostSettingsUi<SettingsList, Input> = {
  * `appendEntry` is bound per extension instance, so the host is built per
  * factory invocation rather than shared at module scope.
  */
-function createOmpHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, OmpAgentMessage> {
+function createOmpHost(
+    pi: ExtensionAPI,
+    logger: Logger,
+): RuntimeHost<ExtensionContext, OmpAgentMessage> {
     return {
         codec: ompCodec,
         spec: ompSpec,
@@ -155,7 +173,8 @@ function createOmpHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, OmpAgent
 }
 
 export default async function betterCompactOmp(pi: ExtensionAPI) {
-    const runtime = createRuntime(createOmpHost(pi))
+    const logger = fileLogger(pi)
+    const runtime = createRuntime(createOmpHost(pi, logger))
     const ownerPath = join(getAgentDir(), CONFIG_FILE)
     const activeCompactionOwner = await loadOmpCompactionOwner(ownerPath)
     /**

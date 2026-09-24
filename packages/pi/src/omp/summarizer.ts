@@ -20,7 +20,7 @@ const SUMMARY_MAX_TOKENS = 8_192
  * compatibility layer is a dependency the adapter does not need.
  */
 export function createOmpSummarizer(
-    ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "models">,
+    ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "models" | "sessionManager">,
     logger: Logger,
     signal?: AbortSignal,
 ): Summarizer {
@@ -55,6 +55,10 @@ export function createOmpSummarizer(
                         // populated and `complete` does not accept one.
                         apiKey: auth.apiKey,
                         headers: auth.headers,
+                        // Session-routed providers reject a request that names no
+                        // session: OpenCode Go answers 400 MissingSessionID. The
+                        // host's own requests carry this id, so side calls must too.
+                        sessionId: ctx.sessionManager.getSessionId(),
                         maxTokens: SUMMARY_MAX_TOKENS,
                         signal,
                     },

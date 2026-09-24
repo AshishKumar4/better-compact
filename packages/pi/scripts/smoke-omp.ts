@@ -86,7 +86,18 @@ async function main(): Promise<void> {
         compact: async () => {},
     }
 
+    // Oh My Pi's file logger. Anything the extension logs must land here, never
+    // on stderr, which would paint over the TUI.
+    const fileLog: string[] = []
+    const logger = {
+        warn: (message: string) => fileLog.push(message),
+        error: (message: string) => fileLog.push(message),
+        info: () => {},
+        debug: () => {},
+    }
+
     const api = {
+        logger,
         on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
             recorded.handlers.set(event, handler)
         },
@@ -134,6 +145,7 @@ async function main(): Promise<void> {
         notices: [],
     }
     await factory.default({
+        logger,
         on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
             duplicate.handlers.set(event, handler)
         },
@@ -183,6 +195,10 @@ async function main(): Promise<void> {
         fromDuplicate,
         undefined,
         "the losing instance must leave the request alone, not prune it again",
+    )
+    assert.ok(
+        fileLog.some((message) => message.includes("loaded twice")),
+        "the duplicate warning must reach the host's file logger, not stderr",
     )
     label("the duplicate instance stayed inert for a session it does not own")
 
