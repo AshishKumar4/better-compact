@@ -82,7 +82,7 @@ Changes made in `/better-compact-settings` apply to later runs without restartin
 Use an explicit version to force a fresh OpenCode package cache entry:
 
 ```bash
-opencode plugin better-compact@0.2.9 --global
+opencode plugin better-compact@0.3.0 --global
 ```
 
 If the plugin is missing after a failed or stale install, clear its cache and restart OpenCode:
