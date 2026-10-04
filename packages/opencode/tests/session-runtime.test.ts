@@ -3,6 +3,16 @@ import test from "node:test"
 import { createRuntimeState, type WithParts } from "../lib/state"
 import { Logger } from "../lib/logger"
 
+test("a failed compaction is contained before a waiter attaches and stays observable", async () => {
+    const runtime = createRuntimeState({}, new Logger(false))
+    runtime.startCompaction("late-waiter", async () => { throw new Error("winner exploded") })
+    const pending = runtime.activeCompaction("late-waiter")
+    assert.ok(pending)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(runtime.activeCompaction("late-waiter"), undefined)
+    await assert.rejects(pending, /winner exploded/)
+})
+
 function userMessage(sessionID: string): WithParts {
     return {
         info: {

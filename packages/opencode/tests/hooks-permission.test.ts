@@ -994,9 +994,17 @@ test("a waiting transform is not rejected when the active compaction fails", asy
         buildConfig("allow"),
         mkdtempSync(join(tmpdir(), "better-compact-loser-shield-")),
     )
+    let signalWaiter = () => {}
+    const waiterReady = new Promise<void>((resolve) => { signalWaiter = resolve })
+    const activeCompaction = runtime.activeCompaction
+    runtime.activeCompaction = (id) => {
+        const pending = activeCompaction(id)
+        if (id === sessionId && pending) signalWaiter()
+        return pending
+    }
 
     const waiting = handler({}, { messages })
-    await new Promise((resolve) => setTimeout(resolve, 25))
+    await waiterReady
     rejectWinner(new Error("winner exploded"))
     await waiting
 

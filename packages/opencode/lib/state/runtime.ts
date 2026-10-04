@@ -147,6 +147,13 @@ export function createRuntimeState(client: any, logger: Logger): RuntimeState {
                     if (current.compaction === tracked) current.compaction = undefined
                 })
             current.compaction = tracked
+            // State loading can delay a request's waiter past this rejection.
+            // Observe failures immediately while keeping the rejected promise
+            // available to callers already waiting on the job.
+            void tracked.catch((error) => logger.warn("Background compaction failed", {
+                sessionId,
+                error: error instanceof Error ? error.message : String(error),
+            }))
             return true
         },
         activeCompaction(sessionId) {
