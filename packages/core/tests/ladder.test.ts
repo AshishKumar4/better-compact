@@ -2104,3 +2104,58 @@ test("a collapse cap stops one pass early and leaves the rest above target", () 
         "a capped pass leaves the target unmet rather than collapsing further",
     )
 })
+
+test("bypassSummaries prunes tools without assistant previews, prefix summaries, or summary jobs", () => {
+    const turns = buildMultiRunConversation()
+    const plan = buildPlan(
+        turns,
+        inputs({
+            contextLimit: 1_000,
+            force: true,
+            recentToolResultBudgetTokens: 0,
+            bypassSummaries: true,
+            prefixSummaryAllowed: true,
+        }),
+        spec,
+    )
+    assert.ok(plan)
+    assert.equal(plan.requiresCustomCompaction, false)
+    assert.equal(plan.needsNativeCompaction, true)
+    assert.deepEqual(plan.summaryJobs, [])
+    assert.deepEqual(plan.assistantSummaryKeys, [])
+    assert.ok(
+        !plan.stages.some(
+            (stage) => stage.name === "assistant-runs" || stage.name === "prefix-summary",
+        ),
+    )
+    const out = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
+    for (const turn of turns) {
+        for (const item of turn.items.filter((item) => item.kind === "text")) {
+            assert.ok(
+                out.some((kept) => kept.items.includes(item)),
+                "prose remains byte-identical",
+            )
+        }
+    }
+})
+
+test("enabling bypass rejects a cached summary plan and clears its sticky summary state on rebuild", () => {
+    const turns = buildMultiRunConversation()
+    const old = buildPlan(turns, inputs({ contextLimit: 100, force: true }), spec)
+    assert.ok(old?.requiresCustomCompaction)
+    const snapshot = toPlanSnapshot(old)
+    assert.equal(
+        replayPlanSnapshot(turns, snapshot, spec, { allowRegrown: true, bypassSummaries: true }),
+        null,
+    )
+    const next = buildPlan(
+        turns,
+        inputs({ contextLimit: 1_000, force: true, priorPlan: snapshot, bypassSummaries: true }),
+        spec,
+    )
+    assert.ok(next)
+    assert.equal(next.requiresCustomCompaction, false)
+    assert.deepEqual(next.summaryJobs, [])
+    assert.deepEqual(next.assistantSummaries, {})
+    assert.equal(next.needsNativeCompaction, true)
+})

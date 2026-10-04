@@ -239,7 +239,9 @@ export function ProgressDialog(props: {
                                 detail={`${percent()}%`}
                             />
                             <ContextWindowMeters theme={theme} job={props.job} />
-                            {props.job.error ? <text fg={theme.error}>{props.job.error}</text> : null}
+                            {props.job.error ? (
+                                <text fg={theme.error}>{props.job.error}</text>
+                            ) : null}
                         </box>
                     </Card>
 
@@ -256,7 +258,9 @@ export function ProgressDialog(props: {
                             {props.job.logs.slice(-8).map((line) => (
                                 <text fg={theme.textMuted}>{line}</text>
                             ))}
-                            {!props.job.logs.length ? <text fg={theme.textMuted}>No log entries yet.</text> : null}
+                            {!props.job.logs.length ? (
+                                <text fg={theme.textMuted}>No log entries yet.</text>
+                            ) : null}
                         </box>
                     </Card>
                 </box>
@@ -294,7 +298,13 @@ function ContextWindowMeters(props: { theme: Theme; job: BoundaryJobProgress }) 
     )
 }
 
-function ContextMeterRow(props: { theme: Theme; label: string; tokens: number; limit: number; color: "primary" | "success" | "warning" }) {
+function ContextMeterRow(props: {
+    theme: Theme
+    label: string
+    tokens: number
+    limit: number
+    color: "primary" | "success" | "warning"
+}) {
     const width = 22
     const ratio = Math.max(0, Math.min(1, props.tokens / Math.max(1, props.limit)))
     const filled = Math.round(ratio * width)
@@ -422,6 +432,20 @@ export function PanelDialog(props: {
                     </Card>
 
                     <Card theme={theme} title="Compaction strength">
+                        <ToggleRow
+                            theme={theme}
+                            label="Bypass Better Compact summaries"
+                            enabled={props.settings.bypassSummaries !== false}
+                            onToggle={() =>
+                                props.onSettingsChange({
+                                    ...props.settings,
+                                    bypassSummaries: props.settings.bypassSummaries === false,
+                                })
+                            }
+                        />
+                        <text fg={theme.textMuted}>
+                            Prune first; use native compaction if more space is needed.
+                        </text>
                         <box flexDirection="column" gap={0}>
                             <PresetRow
                                 theme={theme}
@@ -511,7 +535,11 @@ export function PanelDialog(props: {
     )
 }
 
-function PresetRow(props: { theme: Theme; current: CompactionPreset; onSelect: (preset: CompactionPreset) => void }) {
+function PresetRow(props: {
+    theme: Theme
+    current: CompactionPreset
+    onSelect: (preset: CompactionPreset) => void
+}) {
     const presets: Array<{ id: CompactionPreset; label: string }> = [
         { id: "light", label: "gentle" },
         { id: "moderate", label: "balanced" },
@@ -585,12 +613,7 @@ function EffortRow(props: {
     )
 }
 
-function ToggleRow(props: {
-    theme: Theme
-    label: string
-    enabled: boolean
-    onToggle: () => void
-}) {
+function ToggleRow(props: { theme: Theme; label: string; enabled: boolean; onToggle: () => void }) {
     return (
         <box height={1} flexDirection="row" justifyContent="space-between">
             <text fg={props.theme.text}>{props.label}</text>

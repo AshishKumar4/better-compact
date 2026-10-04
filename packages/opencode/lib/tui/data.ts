@@ -36,6 +36,7 @@ export function loadTuiCompactionSettings(api: TuiApi, config: PluginConfig): Co
     const stored = api.kv.get<Partial<CompactionConfig> | undefined>(SETTINGS_KEY, undefined)
     return {
         automatic: stored?.automatic ?? config.compaction.automatic,
+        bypassSummaries: stored?.bypassSummaries ?? config.compaction.bypassSummaries ?? true,
         preset: normalizePreset(stored?.preset ?? config.compaction.preset),
         summaryEffort: normalizeSummaryEffort(stored?.summaryEffort ?? config.compaction.summaryEffort),
         custom: normalizeCompactionCustom({
@@ -111,9 +112,11 @@ function activeSessionModel(
     api: TuiApi,
     sessionID: string,
 ): { providerID: string; modelID: string; variant?: string } | undefined {
-    const session = api.state.session.get(sessionID) as unknown as {
-        model?: { id?: string; modelID?: string; providerID?: string; variant?: string }
-    } | undefined
+    const session = api.state.session.get(sessionID) as unknown as
+        | {
+              model?: { id?: string; modelID?: string; providerID?: string; variant?: string }
+          }
+        | undefined
     const providerID = session?.model?.providerID
     const modelID = session?.model?.id ?? session?.model?.modelID
     if (typeof providerID === "string" && typeof modelID === "string") {

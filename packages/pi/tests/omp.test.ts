@@ -575,6 +575,25 @@ test("a host without the rewrite seam gets the pruned prefix as one durable summ
     assert.equal(answer.tokensFreed, plan.beforeTokens - plan.afterPruneTokens)
 })
 
+test("prune-only plans decline to native compaction when the target cannot be met", () => {
+    const messages = overTriggerConversation()
+    const branch = branchOf(messages)
+    const { plan, turns } = planFor(messages, 500, { bypassSummaries: true })
+    assert.equal(plan.needsNativeCompaction, true)
+    assert.equal(plan.requiresCustomCompaction, false)
+    assert.deepEqual(plan.summaryJobs, [])
+    for (const supportsRewrite of [false, true]) {
+        assert.equal(
+            buildCompactionAnswer(
+                { trigger: "threshold", plan, turns, messages, branchEntries: branch.entries },
+                ompSpec,
+                { supportsRewrite },
+            ),
+            undefined,
+        )
+    }
+})
+
 test("snapcompact frame entries pass through a rewrite byte-identical", () => {
     // A session that ran OMP snapcompact carries compactionSummary entries
     // before the switch. They encode as opaque items the ladder never enters,

@@ -23,6 +23,8 @@ export interface CompactionCustomSettings {
 
 export interface CompactionConfig {
     automatic: boolean
+    /** Prune only; leave assistant and prefix summarization to the host. Defaults to true. */
+    bypassSummaries?: boolean
     preset: CompactionPreset
     summaryEffort: SummaryEffort
     custom: CompactionCustomSettings

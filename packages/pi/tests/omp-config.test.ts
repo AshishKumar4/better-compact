@@ -104,3 +104,11 @@ test("the prefixSummary opt-in survives a named preset", () => {
         false,
     )
 })
+
+test("summary bypass defaults on, persists independently of effort, and validates its type", () => {
+    assert.equal(mergeCompactionConfig().bypassSummaries, true)
+    const parsed = parseCompactionConfig({ bypassSummaries: false, summaryEffort: "off" })
+    assert.equal(mergeCompactionConfig(parsed).bypassSummaries, false)
+    assert.equal(mergeCompactionConfig(parsed).summaryEffort, "off")
+    assert.equal(parseCompactionConfig({ bypassSummaries: "false" }).bypassSummaries, undefined)
+})

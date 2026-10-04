@@ -1,6 +1,8 @@
 import type { Turn } from "./ir"
+import type { AttachmentJob } from "./attachments"
 
 export type BoundaryStageName =
+    | "attachments"
     | "reasoning"
     | "skills"
     | "supersede-reads"
@@ -43,6 +45,10 @@ export interface RawTailItemBoundary {
 }
 
 export interface BoundaryContextOptions {
+    /** Persisted reopenable links, keyed by attachmentKey. No payload bytes. */
+    attachmentLinks?: Record<string, string>
+    /** Skip all summary stages, including deterministic previews and cached summaries. */
+    bypassSummaries?: boolean
     contextLimit?: number
     triggerRatio?: number
     targetRatio?: number
@@ -90,6 +96,12 @@ export interface BoundaryContextOptions {
 }
 
 export interface BoundaryContextPlan {
+    /** The host should use its native compactor; Better Compact will not summarize. */
+    needsNativeCompaction?: boolean
+    attachmentPolicyKey?: string
+    attachmentLinks?: Record<string, string>
+    attachmentJobs?: AttachmentJob[]
+    bypassSummaries?: boolean
     sessionId: string
     rangeHash: string
     contextLimit: number
@@ -114,6 +126,9 @@ export interface BoundaryContextPlan {
 // The durable, replayable subset of a plan. Field shapes are a persistence
 // surface: snapshots written by earlier releases must keep loading.
 export interface PlanSnapshot {
+    attachmentPolicyKey?: string
+    attachmentLinks?: Record<string, string>
+    bypassSummaries?: boolean
     sessionId: string
     rangeHash: string
     contextLimit: number
@@ -148,6 +163,9 @@ export interface PlanSnapshot {
 
 export function toPlanSnapshot(plan: BoundaryContextPlan): PlanSnapshot {
     return {
+        attachmentPolicyKey: plan.attachmentPolicyKey,
+        attachmentLinks: plan.attachmentLinks,
+        bypassSummaries: plan.bypassSummaries,
         sessionId: plan.sessionId,
         rangeHash: plan.rangeHash,
         contextLimit: plan.contextLimit,

@@ -73,6 +73,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "commands.enabled",
     "compaction",
     "compaction.automatic",
+    "compaction.bypassSummaries",
     "compaction.preset",
     "compaction.summaryEffort",
     "compaction.custom",
@@ -196,6 +197,16 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
                 })
             }
 
+            if (
+                compaction.bypassSummaries !== undefined &&
+                typeof compaction.bypassSummaries !== "boolean"
+            ) {
+                errors.push({
+                    key: "compaction.bypassSummaries",
+                    expected: "boolean",
+                    actual: typeof compaction.bypassSummaries,
+                })
+            }
             const custom = compaction.custom
             if (custom !== undefined) {
                 if (typeof custom !== "object" || custom === null || Array.isArray(custom)) {
@@ -309,6 +320,7 @@ const defaultConfig: PluginConfig = {
     },
     compaction: {
         automatic: true,
+        bypassSummaries: true,
         preset: "light",
         summaryEffort: "inherit",
         custom: { ...DEFAULT_CUSTOM_COMPACTION },
@@ -374,6 +386,10 @@ export function saveGlobalCompactionConfig(
         const normalized = mergeCompaction(deepCloneConfig(defaultConfig).compaction, compaction)
         const values: Array<{ path: Array<string>; value: unknown }> = [
             { path: ["compaction", "automatic"], value: normalized.automatic },
+            {
+                path: ["compaction", "bypassSummaries"],
+                value: normalized.bypassSummaries !== false,
+            },
             { path: ["compaction", "preset"], value: normalized.preset },
             { path: ["compaction", "summaryEffort"], value: normalized.summaryEffort },
             {
@@ -576,6 +592,7 @@ function mergeCompaction(
     if (!override) return base
     return {
         automatic: override.automatic ?? base.automatic,
+        bypassSummaries: override.bypassSummaries ?? base.bypassSummaries ?? true,
         preset: normalizePreset(override.preset ?? base.preset),
         summaryEffort: normalizeSummaryEffort(override.summaryEffort ?? base.summaryEffort),
         custom: normalizeCompactionCustom({
@@ -602,6 +619,7 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
         commands: { enabled: config.commands.enabled },
         compaction: {
             automatic: config.compaction.automatic,
+            bypassSummaries: config.compaction.bypassSummaries !== false,
             preset: config.compaction.preset,
             summaryEffort: config.compaction.summaryEffort,
             custom: { ...config.compaction.custom },

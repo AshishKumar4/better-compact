@@ -15,6 +15,7 @@ export const CONFIG_FILE = "better-compact.json"
 
 export const DEFAULT_CONFIG: CompactionConfig = {
     automatic: true,
+    bypassSummaries: true,
     preset: "light",
     summaryEffort: "inherit",
     custom: { ...DEFAULT_CUSTOM_COMPACTION },
@@ -143,6 +144,8 @@ export async function updateConfigObject(
 export function parseCompactionConfig(value: Record<string, unknown>): CompactionConfigOverride {
     return {
         automatic: typeof value.automatic === "boolean" ? value.automatic : undefined,
+        bypassSummaries:
+            typeof value.bypassSummaries === "boolean" ? value.bypassSummaries : undefined,
         preset: isCompactionPreset(value.preset) ? value.preset : undefined,
         summaryEffort: isSummaryEffort(value.summaryEffort) ? value.summaryEffort : undefined,
         custom: parseCustomConfig(value.custom),
@@ -184,6 +187,7 @@ export function mergeCompactionConfig(...overrides: CompactionConfigOverride[]):
     for (const override of overrides) {
         config = {
             automatic: override.automatic ?? config.automatic,
+            bypassSummaries: override.bypassSummaries ?? config.bypassSummaries,
             preset: override.preset ?? config.preset,
             summaryEffort: override.summaryEffort ?? config.summaryEffort,
             custom: normalizeCompactionCustom({ ...config.custom, ...override.custom }),

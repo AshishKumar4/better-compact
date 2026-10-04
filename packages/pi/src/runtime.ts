@@ -1,5 +1,6 @@
 import {
     buildPlan,
+    preparePlan,
     COMPACTION_PRESETS,
     createEngine,
     createSummaryScheduler,
@@ -83,6 +84,7 @@ export interface RuntimeHost<TCtx, TNative> {
 export interface PlannedTransform<TNative> {
     messages: TNative[]
     plan: BoundaryContextPlan | undefined
+    needsNativeCompaction?: boolean
 }
 
 export interface Runtime<TCtx, TNative> {
@@ -153,6 +155,7 @@ export function createRuntime<TCtx, TNative>(
     })
 
     const planInputs = (ctx: TCtx, contextLimit: number): BuildPlanInputs => ({
+        bypassSummaries: config.bypassSummaries !== false,
         contextLimit,
         triggerRatio: profile.triggerPercent / 100,
         targetRatio: profile.targetPercent / 100,
@@ -224,6 +227,7 @@ export function createRuntime<TCtx, TNative>(
             const turns = codec.encode(messages)
             plans.adopt(sessionKey, turns)
             const result = await createEngine(spec, ports(ctx)).process({
+                bypassSummaries: () => config.bypassSummaries !== false,
                 sessionKey,
                 turns,
                 contextLimit,
@@ -251,7 +255,11 @@ export function createRuntime<TCtx, TNative>(
                     ? Math.max(0, plan.beforeTokens - plan.afterPruneTokens)
                     : widget.prunedTokens,
             })
-            return { messages: codec.decode(result.turns, messages), plan }
+            return {
+                messages: codec.decode(result.turns, messages),
+                plan,
+                needsNativeCompaction: result.needsNativeCompaction,
+            }
         },
 
         async forcePlan(ctx, messages, contextLimit, options) {
@@ -259,7 +267,7 @@ export function createRuntime<TCtx, TNative>(
             const turns = codec.encode(messages)
             plans.adopt(sessionKey, turns)
             const priorPlan = await plans.load(sessionKey)
-            const plan = buildPlan(
+            const plan = await preparePlan(
                 turns,
                 {
                     ...planInputs(ctx, contextLimit),
@@ -269,6 +277,7 @@ export function createRuntime<TCtx, TNative>(
                         options?.providerReportedTokens ?? host.providerTokens(ctx),
                 },
                 spec,
+                logger,
             )
             if (!plan) return null
             await writeTranscript(plan, { transcripts: transcripts(ctx), logger, codec })
@@ -276,37 +285,54 @@ export function createRuntime<TCtx, TNative>(
         },
 
         async summarizeNow(ctx, turns, inputs, plan, signal) {
-            if (plan.summaryJobs.length === 0) return plan
+            const startedAt = generation
+            let summaries: Record<string, string> = {}
             try {
-                const summaries = await scheduler.summarize({
-                    sessionKey: plan.sessionId,
-                    jobs: plan.summaryJobs,
-                    summarizer: host.summarizer(ctx, signal),
-                    concurrency: profile.summarizerConcurrency,
-                })
-                if (Object.keys(summaries).length === 0) return plan
-                return (
-                    buildPlan(
-                        turns,
-                        {
-                            ...inputs,
-                            // Keep the boundary and everything already pruned, but
-                            // drop the prior digest: core carries it forward on an
-                            // unchanged boundary, which would discard the summaries
-                            // this rebuild exists to fold in.
-                            priorPlan: { ...toPlanSnapshot(plan), prefixSummary: undefined },
-                            assistantSummaries: summaries,
-                        },
-                        spec,
-                    ) ?? plan
-                )
+                if (config.bypassSummaries === false && plan.summaryJobs.length > 0)
+                    summaries = await scheduler.summarize({
+                        sessionKey: plan.sessionId,
+                        jobs: plan.summaryJobs,
+                        summarizer: host.summarizer(ctx, signal),
+                        concurrency: profile.summarizerConcurrency,
+                    })
             } catch (error) {
                 logger.warn("Better Compact summaries incomplete", { error: errorText(error) })
-                return plan
             }
+            if (
+                host.sessionId(ctx) !== plan.sessionId ||
+                (generation !== startedAt && config.bypassSummaries === false)
+            ) {
+                throw new Error("Compaction settings or session changed during summarization")
+            }
+            if (config.bypassSummaries !== false) {
+                const pruned = buildPlan(
+                    turns,
+                    { ...inputs, bypassSummaries: true, priorPlan: toPlanSnapshot(plan) },
+                    spec,
+                )
+                if (!pruned) throw new Error("No prune-only plan after settings changed")
+                return pruned
+            }
+            if (Object.keys(summaries).length === 0) return plan
+            return (
+                buildPlan(
+                    turns,
+                    {
+                        ...inputs,
+                        // Keep the boundary and everything already pruned, but
+                        // drop the prior digest: core carries it forward on an
+                        // unchanged boundary, which would discard the summaries
+                        // this rebuild exists to fold in.
+                        priorPlan: { ...toPlanSnapshot(plan), prefixSummary: undefined },
+                        assistantSummaries: summaries,
+                    },
+                    spec,
+                ) ?? plan
+            )
         },
 
         summarizeLater(ctx, turns, contextLimit, plan) {
+            if (config.bypassSummaries !== false) return
             if (summarizing) return
             summarizing = true
             const startedAt = generation
@@ -322,7 +348,7 @@ export function createRuntime<TCtx, TNative>(
                     // The session moved (switch, branch, tree, or a committed
                     // compaction) while these ran, so this plan no longer
                     // describes the live branch and must not be written.
-                    if (generation !== startedAt) return
+                    if (generation !== startedAt || config.bypassSummaries !== false) return
                     const upgraded = buildPlan(
                         turns,
                         {
@@ -349,6 +375,7 @@ export function createRuntime<TCtx, TNative>(
             try {
                 await updateConfigObject(path, patch)
                 config = mergeCompactionConfig(config, patch)
+                generation++
                 profile = resolveCompactionProfile({ compaction: config })
                 host.ui(ctx).notify(savedMessage, "info")
             } catch (error) {

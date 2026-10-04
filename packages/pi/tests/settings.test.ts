@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import type { CompactionConfig } from "@better-compact/core"
+import { Input, SettingsList } from "@earendil-works/pi-tui"
 import { createSettingsComponent } from "../src/tui/settings"
 import type { HostSettingsItem, HostSettingsUi } from "../src/tui/host"
 
@@ -70,6 +71,7 @@ test("host-specific rows share the settings panel and receive changes", () => {
     assert.deepEqual(
         captured.items.map((item) => item.id),
         [
+            "bypassSummaries",
             "automatic",
             "preset",
             "summaryEffort",
@@ -165,4 +167,40 @@ test("custom numeric rows accept in-range input and refuse dead configuration", 
         prefixSummary: true,
         collapsePercent: 25,
     })
+})
+
+test("the real settings list renders the bypass switch first and toggles it with Enter", () => {
+    let saved: CompactionConfig | undefined
+    const ui: HostSettingsUi<SettingsList, Input> = {
+        createSettingsList: (items, rows, change, done) =>
+            new SettingsList(
+                items,
+                rows,
+                {
+                    label: (text) => text,
+                    value: (text) => text,
+                    description: (text) => text,
+                    cursor: ">",
+                    hint: (text) => text,
+                },
+                change,
+                done,
+            ),
+        createTextInput: (value, placeholder, done) => {
+            const input = new Input({ placeholder })
+            input.setValue(value)
+            input.onSubmit = done
+            input.onEscape = () => done()
+            return input
+        },
+    }
+    const list = createSettingsComponent(ui, config(), (result) => {
+        saved = result.config
+    })
+    const rendered = list.render(90).join("\n")
+    assert.match(rendered, /Bypass Better Compact summaries/)
+    assert.match(rendered, /on/)
+    list.handleInput("\r")
+    list.handleInput("\x1b")
+    assert.equal(saved?.bypassSummaries, false)
 })

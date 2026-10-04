@@ -104,7 +104,7 @@ const server: Plugin = (async (ctx) => {
             hostPermissions,
             loadConfig,
         ),
-        event: createEventHandler(runtime, logger),
+        event: createEventHandler(runtime, logger, ctx.client, loadConfig),
         tool: {},
         config: async (opencodeConfig) => {
             if (
@@ -112,14 +112,6 @@ const server: Plugin = (async (ctx) => {
                 compressDisabledByOpencode(opencodeConfig.permission)
             ) {
                 config.compress.permission = "deny"
-            }
-
-            const mutableConfig = opencodeConfig as typeof opencodeConfig & {
-                compaction?: { auto?: boolean }
-            }
-            mutableConfig.compaction = {
-                ...mutableConfig.compaction,
-                auto: false,
             }
 
             hostPermissions.global = opencodeConfig.permission

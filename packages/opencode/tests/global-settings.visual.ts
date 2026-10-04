@@ -69,6 +69,7 @@ test("global compaction save preserves JSONC comments and unrelated settings", a
     expect(parsed.debug).toBe(true)
     expect(parsed.compaction).toEqual({
         automatic: false,
+        bypassSummaries: true,
         preset: "custom",
         summaryEffort: "high",
         custom: {

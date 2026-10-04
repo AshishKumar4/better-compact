@@ -14,7 +14,7 @@
  *   bun run packages/pi/scripts/smoke-omp.ts
  */
 import assert from "node:assert/strict"
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -63,7 +63,9 @@ async function main(): Promise<void> {
     const branch = buildBranch()
     const contextWindow = 8_000
 
+    let nativeCompactions = 0
     const ctx = {
+        isIdle: () => true,
         hasUI: false,
         mode: "print" as const,
         model: { id: "smoke/model", contextWindow, input: ["text"], provider: "smoke" },
@@ -83,7 +85,9 @@ async function main(): Promise<void> {
             setWidget: () => {},
             custom: async () => undefined,
         },
-        compact: async () => {},
+        compact: async () => {
+            nativeCompactions++
+        },
     }
 
     // Oh My Pi's file logger. Anything the extension logs must land here, never
@@ -183,6 +187,24 @@ async function main(): Promise<void> {
     const reference = JSON.stringify(transformed.messages)
     assert.match(reference, /\[Better Compact context pruning applied\]/)
     label(`context transform pruned to ${transformed.messages.length} messages with a reference`)
+    const pressured = messages.map((message) =>
+        message.role === "assistant"
+            ? {
+                  ...message,
+                  content: [
+                      ...message.content,
+                      { type: "text", text: "Retain this assistant explanation. ".repeat(1_000) },
+                  ],
+              }
+            : message,
+    )
+    await call("context", { messages: pressured })
+    await call("agent_end", {})
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(nativeCompactions, 1, "an unmet prune-only target must delegate after the run")
+    await call("agent_end", {})
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(nativeCompactions, 1, "a native handoff must not loop on repeated end events")
 
     // The duplicate saw the same session second, so it must add nothing. If it
     // were live, this second pass would re-plan the already-pruned request.
@@ -246,6 +268,20 @@ async function main(): Promise<void> {
     // Stock Oh My Pi (what this smoke loads) has no rewrite seam and says so
     // by omitting `supportsRewrite`; there the answer is one durable summary
     // over a whole-turn boundary, the only shape it can persist.
+    const pruneOnly = (await call("session_before_compact", compactEvent)) as Answer
+    assert.equal(
+        pruneOnly,
+        undefined,
+        "prune-only mode must delegate stock-host compaction without inventing a summary",
+    )
+    label("default summary bypass delegated stock-host compaction")
+
+    // Opting in retains compatibility with hosts that only accept summaries.
+    await writeFile(
+        join(agentDir, "better-compact.json"),
+        JSON.stringify({ bypassSummaries: false }),
+    )
+    await call("session_start", {})
     const legacy = (await call("session_before_compact", compactEvent)) as Answer
     assert.notEqual(legacy?.cancel, true)
     assert.equal(legacy?.rewrite, undefined, "no rewrite may be sent to a host without the seam")

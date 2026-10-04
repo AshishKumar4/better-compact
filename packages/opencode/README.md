@@ -43,6 +43,11 @@ JSONC files are preserved when present.
 
 ## Configuration
 
+`Bypass Better Compact summaries` defaults to on in the settings panel (`compaction.bypassSummaries: true`).
+Pruning still runs, but assistant previews and prefix summaries do not. Native automatic compaction remains under OpenCode's control.
+A manual Better Compact run that cannot reach its target requests OpenCode's native compaction.
+Set the switch to off to enable Better Compact's summary stages.
+
 Better Compact reads these files in order:
 
 1. `~/.config/opencode/better-compact.jsonc` or `.json`
@@ -57,6 +62,7 @@ Project settings override global settings.
     "enabled": true,
     "compaction": {
         "automatic": true,
+        "bypassSummaries": true,
         "preset": "light",
         "summaryEffort": "inherit",
     },

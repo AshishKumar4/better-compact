@@ -45,6 +45,11 @@
             "description": "Better Compact compaction preset and custom tuning",
             "additionalProperties": false,
             "properties": {
+                "bypassSummaries": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Skip all Better Compact summary stages and leave further compaction to the host."
+                },
                 "automatic": {
                     "type": "boolean",
                     "default": true,
@@ -123,6 +128,7 @@
             },
             "default": {
                 "automatic": true,
+                "bypassSummaries": true,
                 "preset": "light",
                 "summaryEffort": "inherit",
                 "custom": {

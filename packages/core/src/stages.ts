@@ -1,6 +1,15 @@
 import { countTokens, estimateTurns, truncate, type Estimator } from "./estimate"
 import { assistantRunKey, syntheticTextKey } from "./identity"
 import type { CodecOps, Conventions, Item, Turn } from "./ir"
+import {
+    attachmentKey,
+    attachmentStub,
+    isAttachmentReference,
+    canOffload,
+    protectedImages,
+    type AttachmentJob,
+    type AttachmentPolicy,
+} from "./attachments"
 import type { BoundaryStageName, BoundarySummaryJob } from "./plan"
 import { formatAssistantSummaryPrompt, formatSummarySections } from "./summarize"
 
@@ -12,6 +21,10 @@ export interface StageMutationResult {
 }
 
 export interface StageContext {
+    attachments?: AttachmentPolicy
+    attachmentLinks?: Record<string, string>
+    attachmentJobs?: AttachmentJob[]
+    sessionKey?: string
     codec: CodecOps
     conventions: Conventions
     estimator: Estimator
@@ -49,6 +62,69 @@ export interface Stage {
     // projected context is still above the trigger.
     always?: boolean
     run(working: Turn[], ctx: StageContext): StageMutationResult
+}
+
+export const attachmentsStage: Stage = {
+    name: "attachments",
+    label: "Offloaded older attachments",
+    always: true,
+    run(working, ctx) {
+        const policy = ctx.attachments
+        const changedTurns = new Set<string>()
+        let changedItems = 0
+        if (!policy) return { changedTurns, changedItems }
+        const recent = protectedImages(working, policy)
+        for (const turn of working.slice(0, ctx.rawTailStartIndex)) {
+            // Item-level splits may expose part of a protected recent turn.
+            // Offloading uses whole-turn protection, even in that case.
+            if (turn.fragmentKey !== undefined) continue
+            if (turn.items.some((item) => ctx.conventions.isPreservedItem?.(item))) continue
+            const next: Item[] = []
+            for (const item of turn.items) {
+                let replacement = item
+                for (const attachment of policy.list(item)) {
+                    const location = {
+                        sessionKey: ctx.sessionKey ?? "",
+                        turnKey: turn.key,
+                        itemKey: item.key,
+                    }
+                    const key = attachmentKey(location, attachment)
+                    if (recent.has(key) || !canOffload(policy, attachment, item)) continue
+                    const link = ctx.attachmentLinks?.[key]
+                    if (!link) {
+                        ctx.attachmentJobs?.push({ ...location, attachment })
+                        continue
+                    }
+                    const text = attachmentStub(attachment, link)
+                    const candidate = policy.replace(replacement, attachment, "")
+                    const before = ctx.codec.estimateTurns([{ ...turn, items: [replacement] }])
+                    const reference: Item = {
+                        kind: "synthetic",
+                        key: `attachment-reference:${key}`,
+                        text,
+                    }
+                    const after = ctx.codec.estimateTurns([
+                        {
+                            ...turn,
+                            items: [candidate, reference],
+                        },
+                    ])
+                    // A stored link can cost more than a tiny attachment. Keep
+                    // that attachment rather than increase the request size.
+                    if (after >= before) continue
+                    replacement = candidate
+                    // A later tool-stubbing stage may remove the carrier. Keep
+                    // its recovery link independently in the assistant turn.
+                    next.push(reference)
+                    changedItems++
+                    changedTurns.add(turn.key)
+                }
+                next.push(replacement)
+            }
+            turn.items = next
+        }
+        return { changedTurns, changedItems }
+    },
 }
 
 export const skillsStage: Stage = {
@@ -198,7 +274,12 @@ export function transformCompactedPrefix(turns: Turn[], ctx: StageContext): Turn
     // must agree or a selected key finds nothing to collapse and the plan
     // promises savings the applied output never delivers.
     return turns.map((turn) => {
-        if (turn.role === "user" || isPreservedTurn(turn, ctx.conventions)) return turn
+        if (
+            turn.role === "user" ||
+            isPreservedTurn(turn, ctx.conventions) ||
+            turn.items.some((item) => ctx.attachments?.list(item).length)
+        )
+            return turn
         return ctx.assistantSummaryKeys.has(assistantRunKey([turn]))
             ? collapseAssistantRun([turn], ctx)
             : turn
@@ -207,6 +288,7 @@ export function transformCompactedPrefix(turns: Turn[], ctx: StageContext): Turn
 
 export function turnText(turn: Turn): string {
     return turn.items
+        .filter((item) => !isAttachmentReference(item))
         .filter(
             (item): item is Extract<Item, { kind: "text" | "synthetic" }> =>
                 item.kind === "text" || item.kind === "synthetic",
@@ -285,7 +367,8 @@ function stubToolItems(
         if (!turn || turn.role !== "assistant") continue
         let changed = false
         turn.items = turn.items.map((item) => {
-            if (item.kind !== "tool" || !matches(item)) return item
+            if (item.kind !== "tool" || ctx.attachments?.list(item).length || !matches(item))
+                return item
             changed = true
             changedItems++
             return toolStub(item, ctx.conventions, outcome?.(item))
@@ -370,6 +453,10 @@ function stripToolItems(
 
         for (const item of turn.items) {
             if (item.kind !== "tool") {
+                nextItems.push(item)
+                continue
+            }
+            if (ctx.attachments?.list(item).length) {
                 nextItems.push(item)
                 continue
             }
@@ -488,7 +575,7 @@ function compactAssistantRuns(working: Turn[], ctx: StageContext): StageMutation
     const tail = working.slice(ctx.rawTailStartIndex)
     const changedTurns = new Set<string>()
     let changedItems = 0
-    for (const group of assistantGroups(compacted, ctx.conventions)) {
+    for (const group of assistantGroups(compacted, ctx.conventions, ctx.attachments)) {
         if (!ctx.assistantSummaryKeys.has(group.key)) continue
         let groupItems = 0
         for (const turn of group.turns) {
@@ -515,7 +602,7 @@ function selectAssistantRunsToSummarize(
     // Biggest first: the cost of a turn is the only thing that decides whether
     // summarizing it is worth an LLM call. Age used to weight this, which let a
     // small old turn outrank a large recent one and spent calls for little.
-    const candidates = assistantGroups(compacted, ctx.conventions)
+    const candidates = assistantGroups(compacted, ctx.conventions, ctx.attachments)
         .map((group) => {
             const before = estimateTurns(group.turns, ctx.codec, { overheadTokens: 0 })
             const summaryText = group.turns.map(turnText).filter(Boolean).join("\n\n")
@@ -554,6 +641,7 @@ function selectAssistantRunsToSummarize(
 export function assistantGroups(
     turns: Turn[],
     conventions?: Conventions,
+    attachments?: AttachmentPolicy,
 ): Array<{ key: string; turns: Turn[]; endIndex: number }> {
     const groups: Array<{ key: string; turns: Turn[]; endIndex: number }> = []
     let current: Turn[] = []
@@ -566,7 +654,12 @@ export function assistantGroups(
     // a huge turn cannot drag its small neighbours into the same summary.
     // User turns and archive turns are never collapsible.
     turns.forEach((turn, index) => {
-        if (turn.role === "user" || (conventions && isPreservedTurn(turn, conventions))) return
+        if (
+            turn.role === "user" ||
+            (conventions && isPreservedTurn(turn, conventions)) ||
+            turn.items.some((item) => attachments?.list(item).length)
+        )
+            return
         current.push(turn)
         flush(index)
     })
@@ -623,6 +716,7 @@ function collapseAssistantRun(group: Turn[], ctx: StageContext): Turn {
                 key: `${first.key}_better_compact_compactified`,
                 text: lines.join("\n"),
             },
+            ...group.flatMap((turn) => turn.items.filter(isAttachmentReference)),
         ],
     }
 }

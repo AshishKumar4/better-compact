@@ -9,8 +9,6 @@
   <a href="https://www.npmjs.com/package/@better-compact/core"><img src="https://img.shields.io/npm/dm/%40better-compact%2Fcore?style=flat-square" alt="monthly downloads"></a>
 </p>
 
-<p align="center"><sub>Edited and maintained by Claude. Provided as-is.</sub></p>
-
 Shared context-pruning engine for Better Compact adapters.
 
 ## Install
@@ -28,7 +26,8 @@ Everything is exported from [`src/index.ts`](src/index.ts).
 | Module                             | Main exports                                                                      |
 | ---------------------------------- | --------------------------------------------------------------------------------- |
 | [`ir.ts`](src/ir.ts)               | `Turn`, `Item`, `Codec`, `CodecOps`, `Conventions`                                |
-| [`ladder.ts`](src/ladder.ts)       | `createEngine`, `buildPlan`, `transformTurns`, `replayPlanSnapshot`, `LadderSpec` |
+| [`ladder.ts`](src/ladder.ts)       | `buildPlan`, `transformTurns`, `replayPlanSnapshot`, `LadderSpec` |
+| [`engine.ts`](src/engine.ts)       | `createEngine`, `preparePlan`, `ProcessResult` |
 | [`stages.ts`](src/stages.ts)       | pruning stages and `Stage`                                                        |
 | [`plan.ts`](src/plan.ts)           | `BoundaryContextPlan`, `PlanSnapshot`, `toPlanSnapshot`                           |
 | [`ports.ts`](src/ports.ts)         | `EnginePorts`, `TranscriptStore`, `PlanStore`, `Summarizer`, `Logger`             |
@@ -64,6 +63,44 @@ const result = await engine.process({
 - `unchanged`: no active plan and no pruning needed;
 - `replayed`: a valid stored plan was applied;
 - `planned`: a new plan was built and stored.
+
+## Attachment offloading
+
+Set `spec.attachments` to an `AttachmentPolicy` to enable the first stage, before tool stubbing.
+The policy keeps storage and provider pricing in the host:
+
+- `list(item)` identifies images and files, including those nested inside tool results.
+- `estimateTokens(attachment, item)` returns the active provider/model's media cost. Unknown cost returns `undefined`.
+- `store(attachment, item, location)` saves the payload and returns a reopenable path or URL. It can be asynchronous.
+- `replace(item, attachment, text)` replaces the payload with text, preserving unrelated content and the item's key.
+
+The payload stays in the native item handle; core does not copy it into metadata or choose a storage directory.
+Return a link only after the file is durable and the agent can reopen it.
+Core passes empty replacement text and emits the link separately, so later summaries cannot truncate the recovery path.
+Use a stable attachment ID within each item, and change `policy.key` when the model or retention policy changes.
+
+The stage keeps the protected recent turns and the last two images. `keepRecentImages` changes that count.
+Existing compaction archives stay intact. Unpriced attachments, failed writes, and replacements that save no tokens stay unchanged.
+User prose stays unchanged; an eligible older attachment becomes a stub such as `[image/png 1280x800 → /workspace/media/image.png]`.
+Provider estimates replace the codec's generic media estimate for trigger checks and plan accounting.
+The host should use the provider's image sizing rules, not the base64 string's length.
+
+`engine.process()` awaits storage automatically. A host that builds forced plans directly must use `await preparePlan(turns, inputs, spec, logger)`.
+`buildPlan()` remains synchronous and performs no storage writes; its `attachmentJobs` describe unresolved work.
+Persist plans with `toPlanSnapshot()`. Replay uses saved links without storing the payload again.
+Changing the policy key invalidates replay so the new provider's costs are applied.
+
+## Summary bypass
+
+Pass `bypassSummaries: true` to skip assistant-message collapse, preview truncation, and prefix summaries.
+This also refuses cached summary plans. `summariesAllowed: false` only disables model calls and is a different option.
+For live settings, `engine.process()` accepts a reader: `bypassSummaries: () => settings.bypassSummaries`.
+The engine rechecks it after asynchronous work before applying a summary.
+
+When pruning leaves context above the target, `plan.needsNativeCompaction` is true.
+`engine.process()` also returns this flag after rebuilding or replaying a prune-only plan.
+The host then selects its native compaction method. Core does not invoke a provider or duplicate a host's method order.
+The pi, OMP, and OpenCode settings default `bypassSummaries` to true; library callers choose the option explicitly.
 
 ## Development
 

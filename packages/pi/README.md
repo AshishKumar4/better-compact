@@ -106,11 +106,20 @@ stages applied and tokens reclaimed — and keeps the full plan behind
 
 ## Configuration
 
+`Bypass Better Compact summaries` is on by default in `/better-compact-settings`, in both pi and OMP.
+It skips assistant-message previews, model-written summaries, and prefix summaries. Earlier pruning stages still run.
+If they cannot reach the target, manual compaction delegates to the host's native compactor.
+OMP uses its configured `compaction.methodOrder`; Better Compact does not keep a second method list.
+Automatic pruning requests native compaction after the active run settles if the target is still unmet.
+The host keeps control of the compaction method; no compaction starts inside a request-transform hook.
+Turn this switch off to use Better Compact's summary stages.
+
 Create `<agent-dir>/better-compact.json`:
 
 ```json
 {
     "automatic": true,
+    "bypassSummaries": true,
     "preset": "moderate",
     "summaryEffort": "inherit",
     "ompCompactionOwner": "better-compact"
@@ -166,12 +175,12 @@ When `ompCompactionOwner` is `omp`, Better Compact registers no compaction hook.
 
 ### pi native compaction
 
-pi cannot accept a custom compaction result. Disable its native compaction if Better Compact should be the only context reducer:
+Keep pi's native compaction enabled when bypassing Better Compact summaries:
 
 ```json
 {
     "compaction": {
-        "enabled": false
+        "enabled": true
     }
 }
 ```
@@ -201,7 +210,8 @@ How that prefix is persisted depends on the host. An OMP build with the in-place
 
 OMP uses its native methods when it owns compaction, when Better Compact cannot produce a valid boundary, or when a pass would free less than the no-progress dead-band.
 
-`summaryEffort` accepts `off` to skip side-model summaries; collapsed runs then carry a deterministic preview and the transcript pointer.
+When `bypassSummaries` is false, `summaryEffort: "off"` skips model calls but still allows deterministic previews.
+Use `bypassSummaries: true` to disable all Better Compact summarization, including those previews.
 
 ### pi
 

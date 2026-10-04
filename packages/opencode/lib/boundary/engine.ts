@@ -23,6 +23,7 @@ export async function processBoundaryTransform(input: {
     state: SessionState
     logger: Logger
     config: PluginConfig
+    loadConfig?: () => PluginConfig
     directory: string
     messages: WithParts[]
     providerReportedTokens?: number
@@ -49,6 +50,7 @@ export async function processBoundaryTransform(input: {
     const profile = resolveCompactionProfile(input.config)
     const engine = createEngine(openCodeSpec, ports)
     const result = await engine.process({
+        bypassSummaries: () => (input.loadConfig?.() ?? input.config).compaction.bypassSummaries !== false,
         sessionKey: sessionKeyOf(input.messages),
         turns: openCodeCodec.encode(input.messages),
         contextLimit: input.state.modelContextLimit,
@@ -59,6 +61,7 @@ export async function processBoundaryTransform(input: {
         summariesAllowed: input.summariesAllowed,
         summarize: input.summariesAllowed === false ? undefined : input.summarize,
     })
+    input.state.boundary.nativeCompactionNeeded = result.needsNativeCompaction === true
     if (result.outcome === "unchanged") return null
     const decoded = openCodeCodec.decode(result.turns, input.messages)
     input.messages.length = 0

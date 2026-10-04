@@ -183,6 +183,7 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
      * the manual `/compact` path.
      */
     let pendingTrigger: CompactionTrigger | undefined
+    let nativeCompactionSession: string | undefined
 
     /**
      * Oh My Pi keeps one extension runtime across new/resume/fork/handoff
@@ -194,6 +195,7 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
     const rehydrate = async (ctx: ExtensionContext): Promise<void> => {
         if (!runtime.owns(ctx)) return
         pendingTrigger = undefined
+        nativeCompactionSession = undefined
         await runtime.rehydrate(ctx)
     }
 
@@ -204,6 +206,7 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
     pi.on("session_compact", (_event, ctx) => rehydrate(ctx))
 
     pi.on("auto_compaction_start", (event) => {
+        nativeCompactionSession = undefined
         pendingTrigger = event.reason
     })
 
@@ -211,10 +214,34 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
         pendingTrigger = undefined
     })
 
+    pi.on("agent_end", (_event, ctx) => {
+        const sessionId = ctx.sessionManager.getSessionId()
+        // Leave the event handler before invoking a method that aborts the
+        // current run. An already-started native compaction clears the request.
+        setImmediate(() => {
+            if (
+                nativeCompactionSession !== sessionId ||
+                ctx.sessionManager.getSessionId() !== sessionId ||
+                !ctx.isIdle()
+            )
+                return
+            nativeCompactionSession = undefined
+            if (!runtime.config.automatic || runtime.config.bypassSummaries === false) return
+            void ctx
+                .compact()
+                .catch((error) =>
+                    logger.warn("Native compaction failed", { error: errorText(error) }),
+                )
+        })
+    })
+
     pi.on("context", async (event, ctx) => {
         try {
             if (!runtime.owns(ctx)) return
             const result = await runtime.transform(ctx, event.messages)
+            nativeCompactionSession = result?.needsNativeCompaction
+                ? ctx.sessionManager.getSessionId()
+                : undefined
             return result ? { messages: result.messages } : undefined
         } catch (error) {
             // A failed prune must never break the request; it goes out unpruned.
@@ -451,6 +478,7 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
             await runtime.saveConfig(
                 ctx,
                 {
+                    bypassSummaries: result.config.bypassSummaries,
                     automatic: result.config.automatic,
                     preset: result.config.preset,
                     summaryEffort: result.config.summaryEffort,

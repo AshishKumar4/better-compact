@@ -107,6 +107,14 @@ export function createSettingsComponent<TList, TInput = TList>(
 
     const items: HostSettingsItem<TInput>[] = [
         {
+            id: "bypassSummaries",
+            label: "Bypass Better Compact summaries",
+            description:
+                "Prune first, then let the host compact if needed. No summary calls or previews.",
+            currentValue: config.bypassSummaries !== false ? "on" : "off",
+            values: AUTOMATIC,
+        },
+        {
             id: "automatic",
             label: "Automatic pruning",
             description: "Apply Better Compact to outgoing requests after the trigger.",
@@ -146,7 +154,8 @@ export function createSettingsComponent<TList, TInput = TList>(
         12,
         (id, value) => {
             changed = true
-            if (id === "automatic") config = { ...config, automatic: value === "on" }
+            if (id === "bypassSummaries") config = { ...config, bypassSummaries: value === "on" }
+            else if (id === "automatic") config = { ...config, automatic: value === "on" }
             else if (id === "preset") config = { ...config, preset: value as CompactionPreset }
             else if (id === "summaryEffort")
                 config = { ...config, summaryEffort: value as SummaryEffort }

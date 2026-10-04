@@ -30,6 +30,7 @@ function buildConfig(permission: "allow" | "ask" | "deny" = "allow"): PluginConf
         },
         compaction: {
             automatic: true,
+            bypassSummaries: false,
             preset: "light",
             summaryEffort: "inherit",
             custom: {
@@ -674,6 +675,49 @@ test("better-compact stores virtual plan and reports progress without native sum
     assert.ok((state.boundary.job?.counters.beforeTokens ?? 0) > 0)
     assert.ok((state.boundary.job?.counters.currentTokens ?? 0) > 0)
     assert.ok(state.boundary.job?.logs.some((line) => line.includes("Transcript written")))
+})
+
+test("prune-only manual compaction delegates once after releasing the transform slot", async () => {
+    const sessionId = `native-delegation-${Date.now()}`
+    const messages = [
+        buildUserMessage("u1", "preserve this directive", 1, sessionId),
+        buildMessage("a1", "assistant", "assistant detail ".repeat(30_000), sessionId),
+        buildUserMessage("u2", "middle request", 3, sessionId),
+        buildMessage("a2", "assistant", "latest work", sessionId),
+        buildUserMessage("u3", "continue", 5, sessionId),
+    ]
+    let nativeCalls = 0
+    const client = {
+        session: {
+            get: async () => ({ data: { parentID: null } }),
+            messages: async () => ({ data: messages }),
+            prompt: async () => ({ data: true }),
+            summarize: async () => {
+                assert.equal(
+                    runtime.activeCompaction(sessionId),
+                    undefined,
+                    "native requests must not wait on the job that invoked them",
+                )
+                nativeCalls++
+                return { data: true }
+            },
+        },
+    }
+    const runtime = createRuntimeState(client, new Logger(false))
+    const config = buildConfig("allow")
+    config.compaction.bypassSummaries = true
+    const handler = createCommandExecuteHandler(
+        client,
+        runtime,
+        new Logger(false),
+        config,
+        mkdtempSync(join(tmpdir(), "better-compact-native-delegation-")),
+        { global: undefined, agents: {} },
+    )
+    await handler({ command: "better-compact", sessionID: sessionId, arguments: "" }, { parts: [] })
+    await waitFor(() => nativeCalls > 0)
+    assert.equal(nativeCalls, 1)
+    assert.equal(runtime.get(sessionId).boundary.activePlan?.requiresCustomCompaction, false)
 })
 
 test("concurrent better-compact runs for a session are rejected while one is in flight", async () => {

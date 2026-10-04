@@ -1,8 +1,14 @@
 import { estimateTurns, type Estimator } from "./estimate"
+import {
+    attachmentCodec,
+    attachmentKey,
+    isAttachmentReference,
+    type AttachmentPolicy,
+    type AttachmentJob,
+} from "./attachments"
 import { rangeHash } from "./identity"
 import type { CodecOps, Conventions, Turn } from "./ir"
 import {
-    toPlanSnapshot,
     type BoundaryContextOptions,
     type BoundaryContextPlan,
     type BoundaryStageReport,
@@ -10,10 +16,10 @@ import {
     type PlanSnapshot,
     type RawTailItemBoundary,
 } from "./plan"
-import type { EnginePorts } from "./ports"
 import { formatPrefixSummaryPrompt } from "./summarize"
 import {
     assistantGroups,
+    attachmentsStage,
     findLatestTodoCallId,
     findRawTailStartIndex,
     findBudgetTailStartIndex,
@@ -25,7 +31,6 @@ import {
     type StageContext,
     type StageMutationResult,
 } from "./stages"
-import { writeTranscript } from "./transcript"
 
 const TRIGGER_RATIO = 0.85
 const TARGET_RATIO = 0.3
@@ -53,6 +58,7 @@ export interface LadderSpec {
     codec: CodecOps
     conventions: Conventions
     stages: Stage[]
+    attachments?: AttachmentPolicy
 }
 
 export interface BuildPlanInputs extends BoundaryContextOptions {
@@ -65,12 +71,13 @@ export function buildPlan(
     inputs: BuildPlanInputs,
     spec: LadderSpec,
 ): BoundaryContextPlan | null {
+    const codec = attachmentCodec(spec.codec, spec.attachments)
     const contextLimit = inputs.contextLimit
     if (!contextLimit || contextLimit <= 0 || turns.length === 0) return null
 
     const triggerRatio = inputs.triggerRatio ?? TRIGGER_RATIO
     const targetRatio = inputs.targetRatio ?? TARGET_RATIO
-    const rawEstimateTokens = spec.codec.estimateTurns(turns)
+    const rawEstimateTokens = codec.estimateTurns(turns)
     const providerReportedTokens =
         inputs.providerReportedTokens && inputs.providerReportedTokens > 0
             ? inputs.providerReportedTokens
@@ -97,7 +104,7 @@ export function buildPlan(
         ? findBudgetTailStartIndex(
               turns,
               boundedTailBudget(inputs.tailBudgetTokens, targetTokens),
-              spec.codec,
+              codec,
           )
         : findRawTailStartIndex(
               turns,
@@ -109,7 +116,7 @@ export function buildPlan(
         tailStartIndex,
         triggerTokens,
         targetTokens,
-        spec.codec,
+        codec,
     )
     const prior = inputs.priorPlan
     const priorBoundary = prior ? resolveTailBoundary(turns, prior) : null
@@ -127,17 +134,23 @@ export function buildPlan(
     const working = partition.turns
     const stages: BoundaryStageReport[] = []
     const summaryJobs: BoundarySummaryJob[] = []
+    const attachmentJobs: AttachmentJob[] = []
+    const attachmentLinks = { ...prior?.attachmentLinks, ...inputs.attachmentLinks }
     const expandedPrefix = priorBoundary !== null && compareBoundaries(boundary, priorBoundary) > 0
-    const priorPrefixSummary = prior?.prefixSummary
-        ? stripTranscriptReference(prior.prefixSummary, prior.transcriptRelativePath)
-        : undefined
+    const bypassSummaries = inputs.bypassSummaries === true
+    const priorPrefixSummary =
+        !bypassSummaries && prior?.prefixSummary
+            ? stripTranscriptReference(prior.prefixSummary, prior.transcriptRelativePath)
+            : undefined
     const prefixSummaryResultKey = `prefix-summary:${compactedRangeHash}`
     const prefixSummaryJobKey =
         expandedPrefix && priorPrefixSummary ? prefixSummaryResultKey : undefined
-    const assistantSummaries = {
-        ...(prior?.assistantSummaries ?? {}),
-        ...(inputs.assistantSummaries ?? {}),
-    }
+    const assistantSummaries = bypassSummaries
+        ? {}
+        : {
+              ...(prior?.assistantSummaries ?? {}),
+              ...(inputs.assistantSummaries ?? {}),
+          }
     const rolledPrefixSummary = assistantSummaries[prefixSummaryResultKey]
     delete assistantSummaries[prefixSummaryResultKey]
     const preservedToolCallIds = findRecentToolCallTail(
@@ -157,7 +170,11 @@ export function buildPlan(
             .map((stage) => stage.name),
     )
     const ctx: StageContext = {
-        codec: spec.codec,
+        codec,
+        attachments: spec.attachments,
+        attachmentJobs,
+        attachmentLinks,
+        sessionKey: inputs.sessionKey,
         conventions: spec.conventions,
         estimator,
         rawTailStartIndex: partition.rawTailStartIndex,
@@ -165,7 +182,9 @@ export function buildPlan(
         preservedToolCallIds,
         latestTodoCallId: findLatestTodoCallId(compactedRange, spec.conventions),
         assistantSummaries,
-        assistantSummaryKeys: new Set<string>(prior?.assistantSummaryKeys ?? []),
+        assistantSummaryKeys: new Set<string>(
+            bypassSummaries ? [] : (prior?.assistantSummaryKeys ?? []),
+        ),
         summaryJobs,
         selectRuns: true,
         sourceTurns: new Map(compactedRange.map((turn) => [turn.key, turn])),
@@ -174,24 +193,36 @@ export function buildPlan(
         collapsePercent: inputs.collapsePercent,
         summariesAllowed: inputs.summariesAllowed !== false,
     }
-    const prefixSummaryAllowed = inputs.prefixSummaryAllowed !== false
+    const prefixSummaryAllowed = !bypassSummaries && inputs.prefixSummaryAllowed !== false
     // The applied output always carries a reference message; gates must account
     // for it so a "trigger met" claim holds for the real transformed context.
     const reference = synthesizeReferenceTurn(turns, compactedRange, ctx, compactedRangeHash)
-    ctx.referenceTokens = reference ? spec.codec.estimateTurns([reference]) : 0
-    const projectedTokens = () =>
-        estimateTurns(working, spec.codec, estimator) + ctx.referenceTokens
+    ctx.referenceTokens = reference ? codec.estimateTurns([reference]) : 0
+    const projectedTokens = () => estimateTurns(working, codec, estimator) + ctx.referenceTokens
+
+    if (spec.attachments) {
+        runStage(stages, working, estimator, codec, attachmentsStage, ctx)
+        // Summary jobs may read original reasoning, but must not re-embed
+        // attachment payloads that the host has already stored by reference.
+        ctx.sourceTurns = new Map(
+            working
+                .slice(0, partition.rawTailStartIndex)
+                .map((turn) => [turn.key, { ...turn, items: [...turn.items] }]),
+        )
+    }
 
     // Escalation chases the TARGET, not the trigger: the trigger decides when
     // compaction happens, the target decides how deep it goes. Stopping at
     // first-under-trigger left sessions at ~50-80% and re-compacting every few
     // turns instead of dropping to the profile's target.
     for (const stage of spec.stages) {
+        if (bypassSummaries && stage.name === "assistant-runs") continue
         if (!stage.always && projectedTokens() <= targetTokens && !priorStages.has(stage.name)) {
             markTargetMet(stages)
             continue
         }
-        runStage(stages, working, estimator, spec.codec, stage, ctx)
+        if (stage.name === "attachments") continue
+        runStage(stages, working, estimator, codec, stage, ctx)
     }
 
     let requiresCustomCompaction = false
@@ -201,12 +232,38 @@ export function buildPlan(
         (expandedPrefix ? undefined : priorPrefixSummary)
     if (
         prefixSummaryAllowed &&
+        !working
+            .slice(0, partition.rawTailStartIndex)
+            .some((turn) =>
+                turn.items.some(
+                    (item) =>
+                        spec.attachments?.list(item).length ||
+                        spec.conventions.isPreservedItem?.(item),
+                ),
+            ) &&
         (projectedTokens() >= triggerTokens || prior?.requiresCustomCompaction)
     ) {
         const newlyCompactedTurns =
             expandedPrefix && priorBoundary
                 ? turnsBetweenBoundaries(turns, priorBoundary, boundary)
                 : []
+        const summaryDelta = newlyCompactedTurns.map((turn) => {
+            if (!spec.attachments) return turn
+            const source = ctx.sourceTurns.get(turn.key)
+            if (!source) return turn
+            const keys = new Set(turn.items.map((item) => item.key))
+            for (const item of turn.items) {
+                for (const attachment of spec.attachments.list(item)) {
+                    keys.add(
+                        `attachment-reference:${attachmentKey(
+                            { sessionKey: inputs.sessionKey, turnKey: turn.key, itemKey: item.key },
+                            attachment,
+                        )}`,
+                    )
+                }
+            }
+            return { ...turn, items: source.items.filter((item) => keys.has(item.key)) }
+        })
         if (
             ctx.summariesAllowed !== false &&
             prefixSummaryJobKey &&
@@ -222,9 +279,9 @@ export function buildPlan(
                 transcriptRelativePath,
                 prompt: formatPrefixSummaryPrompt(
                     priorPrefixSummary,
-                    newlyCompactedTurns,
+                    summaryDelta,
                     transcriptRelativePath,
-                    spec.codec,
+                    codec,
                 ),
             })
         }
@@ -239,7 +296,7 @@ export function buildPlan(
             prefixSummary,
             compactedRangeHash,
         )
-        const afterPrefix = estimateTurns(working, spec.codec, estimator)
+        const afterPrefix = estimateTurns(working, codec, estimator)
         prefixSummary = result.prefixSummary
         requiresCustomCompaction = result.changedTurns.size > 0
         stages.push({
@@ -255,11 +312,15 @@ export function buildPlan(
     }
 
     const plan: BoundaryContextPlan = {
+        ...(spec.attachments
+            ? { attachmentPolicyKey: spec.attachments.key, attachmentLinks, attachmentJobs }
+            : {}),
+        ...(bypassSummaries ? { bypassSummaries: true } : {}),
         sessionId: inputs.sessionKey,
         rangeHash: compactedRangeHash,
         contextLimit,
         beforeTokens,
-        afterPruneTokens: estimateTurns(working, spec.codec, estimator),
+        afterPruneTokens: estimateTurns(working, codec, estimator),
         overheadTokens,
         triggerTokens,
         targetTokens,
@@ -282,9 +343,10 @@ export function buildPlan(
     }
     plan.afterPruneTokens = estimateTurns(
         transformTurns(turns, rawTailStartIndex, plan, spec),
-        spec.codec,
+        codec,
         estimator,
     )
+    if (bypassSummaries) plan.needsNativeCompaction = plan.afterPruneTokens > plan.targetTokens
     return plan
 }
 
@@ -302,24 +364,16 @@ export function transformTurns(
     }
     const partition = partitionTurns(turns, boundary)
     const originalPrefix = partition.compactedRange
-    if (plan.requiresCustomCompaction) {
-        return partition.finalize([
-            synthesizeSummaryTurn(
-                originalPrefix,
-                plan.prefixSummary || formatPrefixSummary(originalPrefix),
-                plan.transcript.relativePath,
-                plan.rangeHash,
-            ),
-            ...partition.turns.slice(partition.rawTailStartIndex),
-        ])
-    }
     // Replay the recorded strip stages exactly as the planner simulated them,
     // then summarize assistant runs over the stripped prefix. This keeps the
     // applied output identical to the simulation used for the plan's numbers.
     const stageNames = new Set<string>(plan.stages.map((stage) => stage.name))
     const working = partition.turns
     const ctx: StageContext = {
-        codec: spec.codec,
+        codec: attachmentCodec(spec.codec, spec.attachments),
+        attachments: spec.attachments,
+        attachmentLinks: plan.attachmentLinks,
+        sessionKey: plan.sessionId,
         conventions: spec.conventions,
         estimator: { overheadTokens: plan.overheadTokens },
         rawTailStartIndex: partition.rawTailStartIndex,
@@ -336,12 +390,25 @@ export function transformTurns(
         // Replay never queues jobs; gate them off so a stray push cannot leak.
         summariesAllowed: false,
     }
+    if (stageNames.has("attachments")) attachmentsStage.run(working, ctx)
+    if (!plan.bypassSummaries && plan.requiresCustomCompaction) {
+        const prefix = working.slice(0, partition.rawTailStartIndex)
+        return partition.finalize([
+            synthesizeSummaryTurn(
+                prefix,
+                plan.prefixSummary || formatPrefixSummary(prefix),
+                plan.transcript.relativePath,
+                plan.rangeHash,
+            ),
+            ...working.slice(partition.rawTailStartIndex),
+        ])
+    }
     for (const stage of spec.stages) {
-        if (stage.name === "assistant-runs") continue
+        if (stage.name === "attachments" || stage.name === "assistant-runs") continue
         if (stageNames.has(stage.name)) stage.run(working, ctx)
     }
     let prefix = working.slice(0, partition.rawTailStartIndex)
-    if (stageNames.has("assistant-runs")) {
+    if (!plan.bypassSummaries && stageNames.has("assistant-runs")) {
         prefix = transformCompactedPrefix(prefix, ctx)
     }
     const result = [...prefix]
@@ -352,6 +419,7 @@ export function transformTurns(
 }
 
 export interface ReplayOptions {
+    bypassSummaries?: boolean
     // Apply the plan even when the pruned context has regrown past the
     // trigger. Hosts that cannot rebuild (automatic compaction disabled or
     // denied) prefer a stale-but-valid plan over sending raw history.
@@ -364,6 +432,8 @@ export function replayPlanSnapshot(
     spec: LadderSpec,
     options: ReplayOptions = {},
 ): Turn[] | null {
+    if (snapshot.attachmentPolicyKey !== spec.attachments?.key) return null
+    if (options.bypassSummaries === true && snapshot.bypassSummaries !== true) return null
     const boundary = resolveTailBoundary(turns, snapshot)
     if (!boundary || !matchesPlanSnapshot(turns, snapshot)) return null
     const rawTailStartIndex = boundary.turnIndex
@@ -372,6 +442,9 @@ export function replayPlanSnapshot(
         turns,
         rawTailStartIndex,
         {
+            attachmentPolicyKey: snapshot.attachmentPolicyKey,
+            attachmentLinks: snapshot.attachmentLinks,
+            bypassSummaries: snapshot.bypassSummaries,
             sessionId: snapshot.sessionId,
             rangeHash: snapshot.rangeHash,
             contextLimit:
@@ -404,7 +477,8 @@ export function replayPlanSnapshot(
     // longer suffices; refuse so the caller rebuilds with a fresh boundary.
     if (
         !options.allowRegrown &&
-        spec.codec.estimateTurns(transformed) + overheadTokens >= snapshot.triggerTokens
+        attachmentCodec(spec.codec, spec.attachments).estimateTurns(transformed) + overheadTokens >=
+            snapshot.triggerTokens
     ) {
         return null
     }
@@ -417,123 +491,6 @@ export function matchesPlanSnapshot(turns: Turn[], snapshot: PlanSnapshot): bool
     const compactedRange = partitionTurns(turns, boundary).compactedRange
     if (compactedRange.length === 0) return false
     return rangeHash(compactedRange) === snapshot.rangeHash
-}
-
-export type ProcessResult =
-    | { outcome: "unchanged" }
-    | { outcome: "replayed"; turns: Turn[] }
-    | { outcome: "planned"; turns: Turn[]; plan: BoundaryContextPlan }
-
-export interface Engine {
-    process(request: {
-        sessionKey: string
-        turns: Turn[]
-        contextLimit?: number
-        triggerRatio?: number
-        targetRatio?: number
-        recentToolResultBudgetTokens?: number
-        providerReportedTokens?: number
-        tailBudgetTokens?: { floor: number; ceiling: number }
-        summariesAllowed?: boolean
-        prefixSummaryAllowed?: boolean
-        collapsePercent?: number
-        force?: boolean
-        // Side-model summary results for the automatic path. When a
-        // fresh plan queues summary jobs, the engine runs them and rebuilds
-        // the plan with the accepted summaries before persisting it.
-        summarize?: (jobs: BoundarySummaryJob[]) => Promise<Record<string, string>>
-    }): Promise<ProcessResult>
-}
-
-// The boundary-time transform: replay the cached plan when it still holds,
-// otherwise discard it and build, persist, and apply a fresh one.
-export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
-    return {
-        async process({
-            sessionKey,
-            turns,
-            contextLimit,
-            triggerRatio,
-            targetRatio,
-            recentToolResultBudgetTokens,
-            providerReportedTokens,
-            tailBudgetTokens,
-            summariesAllowed,
-            prefixSummaryAllowed,
-            collapsePercent,
-            force,
-            summarize,
-        }) {
-            let staleSnapshotCleared = false
-            let priorPlan: PlanSnapshot | undefined
-            const cached = await ports.plans.load(sessionKey)
-            if (cached && cached.sessionId === sessionKey) {
-                const replayed = force ? null : replayPlanSnapshot(turns, cached, spec)
-                if (replayed) return { outcome: "replayed", turns: replayed }
-                staleSnapshotCleared = true
-                priorPlan = cached
-            }
-
-            const inputs: BuildPlanInputs = {
-                contextLimit,
-                triggerRatio,
-                targetRatio,
-                recentToolResultBudgetTokens,
-                providerReportedTokens,
-                tailBudgetTokens,
-                summariesAllowed,
-                prefixSummaryAllowed,
-                collapsePercent,
-                force,
-                priorPlan,
-                sessionKey,
-                citablePath: ports.transcripts.citablePath,
-            }
-            let plan = buildPlan(turns, inputs, spec)
-            if (!plan) {
-                if (staleSnapshotCleared) await ports.plans.save(sessionKey, null)
-                return { outcome: "unchanged" }
-            }
-            if (summarize && plan.summaryJobs.length > 0) {
-                try {
-                    const assistantSummaries = await summarize(plan.summaryJobs)
-                    if (Object.keys(assistantSummaries).length > 0) {
-                        plan =
-                            buildPlan(
-                                turns,
-                                {
-                                    ...inputs,
-                                    priorPlan: toPlanSnapshot(plan),
-                                    assistantSummaries,
-                                },
-                                spec,
-                            ) ?? plan
-                    }
-                } catch (error) {
-                    ports.logger.warn("Summary scheduling failed; using deterministic fallback", {
-                        sessionId: sessionKey,
-                        error: error instanceof Error ? error.message : String(error),
-                    })
-                }
-            }
-
-            await writeTranscript(plan, {
-                transcripts: ports.transcripts,
-                logger: ports.logger,
-                codec: spec.codec,
-            })
-            const transformed = transformTurns(turns, plan.rawTailStartIndex, plan, spec)
-            await ports.plans.save(sessionKey, toPlanSnapshot(plan))
-            ports.logger.info("Applied Better Compact staged pruning", {
-                sessionId: plan.sessionId,
-                beforeTokens: plan.beforeTokens,
-                afterPruneTokens: plan.afterPruneTokens,
-                transcript: plan.transcript.relativePath,
-                stages: plan.stages.map((stage) => stage.name),
-            })
-            return { outcome: "planned", turns: transformed, plan }
-        },
-    }
 }
 
 function boundedTailBudget(
@@ -791,7 +748,7 @@ function synthesizeReferenceTurn(
     const first = compacted[0]?.key ?? "unknown"
     const last = compacted.at(-1)?.key ?? "unknown"
     const key = `better_compact_context_${hash}`
-    const runIndex = assistantGroups(compacted, ctx.conventions).map((group) =>
+    const runIndex = assistantGroups(compacted, ctx.conventions, ctx.attachments).map((group) =>
         formatReferenceRun(group.turns, ctx),
     )
     const latestTodoState = formatLatestTodoState(compacted, ctx)
@@ -919,6 +876,7 @@ function synthesizeSummaryTurn(
                 key,
                 text: ["[Context Summary]", normalizedSummary, "", referenceBlock].join("\n"),
             },
+            ...compacted.flatMap((turn) => turn.items.filter(isAttachmentReference)),
         ],
     }
 }

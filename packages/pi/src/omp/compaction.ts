@@ -238,8 +238,15 @@ export function buildCompactionAnswer(
 ): CompactionAnswer | undefined {
     const { plan } = input
     if (!plan) return undefined
+    // Do not claim completion through an assistant preview or prefix summary.
+    // An insufficient prune-only plan delegates the whole maintenance pass to
+    // the host; its configured method order remains authoritative.
+    if (plan.bypassSummaries && plan.needsNativeCompaction) return undefined
 
     if (!host.supportsRewrite) {
+        // A stock host cannot persist pruning without a summary boundary.
+        // In prune-only mode the native compactor must supply that boundary.
+        if (plan.bypassSummaries) return undefined
         const tokensFreed = Math.max(0, plan.beforeTokens - plan.afterPruneTokens)
         if (tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return undefined
         const decision = decideCompaction(input)
