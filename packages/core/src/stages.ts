@@ -1,6 +1,6 @@
-import { countTokens, estimateTurns, truncate, type Estimator } from "./estimate"
-import { assistantRunKey, syntheticTextKey } from "./identity"
-import type { CodecOps, Conventions, Item, ItemKey, Synthesis, SynthesisOrigin, Turn } from "./ir"
+import { countTokens, estimateTurns, truncate, type Estimator } from "./estimate.js"
+import { assistantRunKey, syntheticTextKey } from "./identity.js"
+import type { CodecOps, Conventions, Item, ItemKey, Synthesis, SynthesisOrigin, Turn } from "./ir.js"
 import {
     attachmentKey,
     attachmentStub,
@@ -9,9 +9,9 @@ import {
     protectedImages,
     type AttachmentJob,
     type AttachmentPolicy,
-} from "./attachments"
-import type { BoundaryStageName, BoundarySummaryJob } from "./plan"
-import { formatAssistantSummaryPrompt, formatSummarySections } from "./summarize"
+} from "./attachments.js"
+import type { BoundaryStageName, BoundarySummaryJob } from "./plan.js"
+import { formatAssistantSummaryPrompt, formatSummarySections } from "./summarize.js"
 
 const ASSISTANT_TEXT_PREVIEW_CHARS = 1_200
 

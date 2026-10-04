@@ -1,5 +1,5 @@
-import type { Turn } from "./ir"
-import type { AttachmentJob } from "./attachments"
+import type { Turn } from "./ir.js"
+import type { AttachmentJob } from "./attachments.js"
 
 export type BoundaryStageName =
     | "attachments"

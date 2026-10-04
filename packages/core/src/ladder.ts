@@ -1,13 +1,13 @@
-import { estimateTurns, type Estimator } from "./estimate"
+import { estimateTurns, type Estimator } from "./estimate.js"
 import {
     attachmentCodec,
     attachmentKey,
     isAttachmentReference,
     type AttachmentPolicy,
     type AttachmentJob,
-} from "./attachments"
-import { rangeHash } from "./identity"
-import type { CodecOps, Conventions, ItemKey, Turn } from "./ir"
+} from "./attachments.js"
+import { rangeHash } from "./identity.js"
+import type { CodecOps, Conventions, ItemKey, Turn } from "./ir.js"
 import {
     type BoundaryContextOptions,
     type BoundaryContextPlan,
@@ -15,8 +15,8 @@ import {
     type BoundarySummaryJob,
     type PlanSnapshot,
     type RawTailItemBoundary,
-} from "./plan"
-import { formatPrefixSummaryPrompt } from "./summarize"
+} from "./plan.js"
+import { formatPrefixSummaryPrompt } from "./summarize.js"
 import {
     assistantGroups,
     attachmentsStage,
@@ -32,7 +32,7 @@ import {
     type Stage,
     type StageContext,
     type StageMutationResult,
-} from "./stages"
+} from "./stages.js"
 
 const TRIGGER_RATIO = 0.85
 const TARGET_RATIO = 0.3

@@ -7,16 +7,16 @@ export type {
     Synthesis,
     SynthesisOrigin,
     Turn,
-} from "./ir"
+} from "./ir.js"
 export {
     attachmentCodec,
     type Attachment,
     type AttachmentLocation,
     type AttachmentPolicy,
-} from "./attachments"
-export { contentHashKey, keyDeduper, rangeHash } from "./identity"
-export { countTokens, truncate, type Estimator } from "./estimate"
-export { isContextOverflowError } from "./overflow"
+} from "./attachments.js"
+export { contentHashKey, keyDeduper, rangeHash } from "./identity.js"
+export { countTokens, truncate, type Estimator } from "./estimate.js"
+export { isContextOverflowError } from "./overflow.js"
 export {
     toPlanSnapshot,
     type BoundaryContextOptions,
@@ -27,8 +27,8 @@ export {
     type BoundaryTranscriptArtifact,
     type PlanSnapshot,
     type RawTailItemBoundary,
-} from "./plan"
-export type { EnginePorts, Logger, PlanStore, Summarizer, TranscriptStore } from "./ports"
+} from "./plan.js"
+export type { EnginePorts, Logger, PlanStore, Summarizer, TranscriptStore } from "./ports.js"
 export {
     assistantRunsStage,
     formatPrefixSummary,
@@ -41,7 +41,7 @@ export {
     toolsOldStage,
     toolsRemainingStage,
     type Stage,
-} from "./stages"
+} from "./stages.js"
 export {
     buildPlan,
     matchesPlanSnapshot,
@@ -50,16 +50,16 @@ export {
     type BuildPlanInputs,
     type LadderSpec,
     type ReplayOptions,
-} from "./ladder"
-export { createEngine, preparePlan, type Engine, type ProcessResult } from "./engine"
-export { formatTranscript, writeTranscript } from "./transcript"
+} from "./ladder.js"
+export { createEngine, preparePlan, type Engine, type ProcessResult } from "./engine.js"
+export { formatTranscript, writeTranscript } from "./transcript.js"
 export {
     createSummaryScheduler,
     type SummarizeJobsInput,
     type SummarizeProgressEvent,
     type SummaryScheduler,
     type SummarySchedulerOptions,
-} from "./summarize"
+} from "./summarize.js"
 export {
     COMPACTION_PRESETS,
     DEFAULT_CUSTOM_COMPACTION,
@@ -72,4 +72,4 @@ export {
     type CompactionPreset,
     type CompactionProfile,
     type SummaryEffort,
-} from "./profiles"
+} from "./profiles.js"

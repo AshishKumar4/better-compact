@@ -1,6 +1,6 @@
-import type { CodecOps, Turn } from "./ir"
-import type { BoundaryContextPlan } from "./plan"
-import type { Logger, TranscriptStore } from "./ports"
+import type { CodecOps, Turn } from "./ir.js"
+import type { BoundaryContextPlan } from "./plan.js"
+import type { Logger, TranscriptStore } from "./ports.js"
 
 export function formatTranscript(turns: Turn[], codec: CodecOps): string {
     const lines = ["# Better Compact Raw Transcript", ""]

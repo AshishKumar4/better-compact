@@ -1,7 +1,7 @@
-import type { CodecOps, Turn } from "./ir"
-import type { BoundarySummaryJob } from "./plan"
-import type { Logger, Summarizer } from "./ports"
-import { formatTranscript } from "./transcript"
+import type { CodecOps, Turn } from "./ir.js"
+import type { BoundarySummaryJob } from "./plan.js"
+import type { Logger, Summarizer } from "./ports.js"
+import { formatTranscript } from "./transcript.js"
 
 const DEFAULT_CONCURRENCY = 4
 const MIN_SUMMARY_CHARS = 80

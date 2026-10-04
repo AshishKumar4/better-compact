@@ -1,5 +1,5 @@
-import { countTokens } from "./estimate"
-import type { CodecOps, Item, Turn } from "./ir"
+import { countTokens } from "./estimate.js"
+import type { CodecOps, Item, Turn } from "./ir.js"
 
 /** Metadata only. The host can read the payload from the owning item's handle. */
 export interface Attachment {

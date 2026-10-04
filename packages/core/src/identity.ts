@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import type { Turn } from "./ir"
+import type { Turn } from "./ir.js"
 
 // The seed is `key:stamp` per turn, byte-identical to the historical
 // id+timestamp seed, so hashes, transcript paths, and synthetic ids

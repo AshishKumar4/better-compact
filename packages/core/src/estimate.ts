@@ -1,4 +1,4 @@
-import type { CodecOps, Turn } from "./ir"
+import type { CodecOps, Turn } from "./ir.js"
 
 // Matches OpenCode's Token.estimate heuristic; the shared scale every
 // platform estimate is expressed in.

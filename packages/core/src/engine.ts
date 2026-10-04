@@ -4,17 +4,17 @@ import {
     transformTurns,
     type BuildPlanInputs,
     type LadderSpec,
-} from "./ladder"
-import { attachmentCodec, attachmentKey } from "./attachments"
-import type { Turn } from "./ir"
+} from "./ladder.js"
+import { attachmentCodec, attachmentKey } from "./attachments.js"
+import type { Turn } from "./ir.js"
 import {
     toPlanSnapshot,
     type BoundaryContextPlan,
     type BoundarySummaryJob,
     type PlanSnapshot,
-} from "./plan"
-import type { EnginePorts, Logger } from "./ports"
-import { writeTranscript } from "./transcript"
+} from "./plan.js"
+import type { EnginePorts, Logger } from "./ports.js"
+import { writeTranscript } from "./transcript.js"
 
 export type ProcessResult = (
     | { outcome: "unchanged" }

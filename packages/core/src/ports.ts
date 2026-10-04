@@ -1,4 +1,4 @@
-import type { BoundarySummaryJob, PlanSnapshot } from "./plan"
+import type { BoundarySummaryJob, PlanSnapshot } from "./plan.js"
 
 export interface Logger {
     info(message: string, data?: unknown): unknown
