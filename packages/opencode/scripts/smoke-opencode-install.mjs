@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { register } from "node:module"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -64,9 +64,15 @@ try {
     const projectDir = path.join(sandbox, "project")
     const configHome = path.join(sandbox, "config")
     const configDir = path.join(configHome, "opencode")
+    const privateDir = path.join(projectDir, ".opencode", "better-compact")
+    const privateProbe = path.join(privateDir, "smoke.txt")
 
     await mkdir(projectDir, { recursive: true })
     await mkdir(configDir, { recursive: true })
+    await mkdir(privateDir, { recursive: true })
+    await writeFile(privateProbe, "smoke-test data")
+    await chmod(privateDir, 0o755)
+    await chmod(privateProbe, 0o644)
     if (!packageSpec) {
         await mkdir(packageDir, { recursive: true })
         await cp(path.join(root, "package.json"), path.join(packageDir, "package.json"))
@@ -79,6 +85,7 @@ try {
         `{
   ${marker}
   "$schema": "https://opencode.ai/config.json",
+  "compaction": { "auto": true },
 }
 `,
     )
@@ -98,17 +105,36 @@ try {
         XDG_CONFIG_HOME: configHome,
         XDG_DATA_HOME: path.join(sandbox, "data"),
         XDG_STATE_HOME: path.join(sandbox, "state"),
+        // The smoke tests global registration; ancestor project configuration
+        // must not pull the developer's own plugins into this sandbox.
+        OPENCODE_DISABLE_PROJECT_CONFIG: "true",
         PATH: path.dirname(executable),
     }
 
     const version = execFileSync(executable, ["--version"], { encoding: "utf8", env }).trim()
+    console.log(`OpenCode ${version}: checking host configuration before plugin installation`)
+    const debugConfig = () =>
+        JSON.parse(
+            execFileSync(executable, ["debug", "config"], {
+                cwd: projectDir,
+                env,
+                encoding: "utf8",
+                stdio: "pipe",
+            }),
+        )
+    debugConfig()
+    if (((await stat(privateProbe)).mode & 0o777) !== 0o644) {
+        throw new Error("the host changed the permission probe before loading the plugin")
+    }
     const target = packageSpec ?? packageDir
+    console.log(`Installing ${target}`)
     execFileSync(executable, ["plugin", target, "--global"], {
         cwd: projectDir,
         env,
         encoding: "utf8",
         stdio: "pipe",
     })
+    console.log("Plugin registered; loading its server entry")
 
     for (const name of ["opencode.jsonc", "tui.jsonc"]) {
         const text = await readFile(path.join(configDir, name), "utf8")
@@ -120,15 +146,27 @@ try {
         }
     }
 
-    const debug = execFileSync(executable, ["debug", "config"], {
-        cwd: projectDir,
-        env,
-        encoding: "utf8",
-        stdio: "pipe",
-    })
-    const config = JSON.parse(debug)
-    if (config.compaction?.auto !== false) {
-        throw new Error("server plugin did not initialize and disable native auto-compaction")
+    const config = debugConfig()
+    console.log("Installed server loaded; checking native settings and private storage")
+    if (config.compaction?.auto !== true) {
+        throw new Error("server plugin disabled the configured native auto-compaction")
+    }
+    // Initialization awaits securePrivateTree. Its observable permission change
+    // proves the installed server executed without relying on a compaction override.
+    if (
+        ((await stat(privateDir)).mode & 0o777) !== 0o700 ||
+        ((await stat(privateProbe)).mode & 0o777) !== 0o600
+    ) {
+        throw new Error("server plugin did not initialize and secure its private storage")
+    }
+    const configFile = path.join(configDir, "opencode.jsonc")
+    const disabledConfig = (await readFile(configFile, "utf8")).replace(
+        '"auto": true',
+        '"auto": false',
+    )
+    await writeFile(configFile, disabledConfig)
+    if (debugConfig().compaction?.auto !== false) {
+        throw new Error("server plugin overrode an explicit native compaction opt-out")
     }
 
     Object.assign(process.env, {
