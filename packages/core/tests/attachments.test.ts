@@ -138,6 +138,16 @@ test("offloads before tool stages, preserves user prose and the last two images"
     assert.ok(items.includes(f.recentImage))
     assert.ok(items.includes(f.newestImage))
     assert.ok(!items.includes(f.oldImage))
+    const references = items.filter(
+        (item) => item.kind === "synthetic" && item.provenance?.origin === "attachment-reference",
+    )
+    assert.equal(references.length, 2)
+    assert.deepEqual(
+        references.flatMap((item) =>
+            item.kind === "synthetic" ? (item.provenance?.sources ?? []) : [],
+        ),
+        [f.oldImage.key, f.oldFile.key],
+    )
     assert.ok(
         items.some(
             (item) =>
@@ -258,6 +268,14 @@ test("attachment links survive assistant previews and opt-in prefix summaries, i
         assert.ok(plan)
         assert.equal(plan.requiresCustomCompaction, prefixSummaryAllowed)
         const out = transformTurns(f.turns, plan.rawTailStartIndex, plan, f.spec)
+        const inputKeys = new Set(f.turns.flatMap((turn) => turn.items.map((item) => item.key)))
+        for (const item of out.flatMap((turn) => turn.items)) {
+            if (item.kind !== "synthetic" || !item.provenance) continue
+            assert.ok(
+                item.provenance.sources.every((key) => inputKeys.has(key)),
+                "provenance must refer to input items, not generated attachment references",
+            )
+        }
         const text = out
             .flatMap((turn) => turn.items)
             .flatMap((item) =>

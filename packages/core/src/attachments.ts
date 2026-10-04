@@ -51,7 +51,7 @@ export function attachmentStub(attachment: Attachment, link: string): string {
 }
 
 export function isAttachmentReference(item: Item): boolean {
-    return item.kind === "synthetic" && item.key.startsWith("attachment-reference:")
+    return item.kind === "synthetic" && item.provenance?.origin === "attachment-reference"
 }
 
 /** Replace the codec's generic media estimate with the host's provider estimate. */

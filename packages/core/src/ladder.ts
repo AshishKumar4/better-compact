@@ -7,7 +7,7 @@ import {
     type AttachmentJob,
 } from "./attachments"
 import { rangeHash } from "./identity"
-import type { CodecOps, Conventions, Turn } from "./ir"
+import type { CodecOps, Conventions, ItemKey, Turn } from "./ir"
 import {
     type BoundaryContextOptions,
     type BoundaryContextPlan,
@@ -25,7 +25,9 @@ import {
     findBudgetTailStartIndex,
     findRecentToolCallTail,
     formatPrefixSummary,
+    itemKeysOf,
     primaryToolTarget,
+    synthesize,
     transformCompactedPrefix,
     type Stage,
     type StageContext,
@@ -293,6 +295,7 @@ export function buildPlan(
             working,
             currentTailStartIndex > 0 ? currentTailStartIndex : partition.rawTailStartIndex,
             transcriptRelativePath,
+            itemKeysOf(compactedRange),
             prefixSummary,
             compactedRangeHash,
         )
@@ -398,6 +401,7 @@ export function transformTurns(
                 prefix,
                 plan.prefixSummary || formatPrefixSummary(prefix),
                 plan.transcript.relativePath,
+                itemKeysOf(originalPrefix),
                 plan.rangeHash,
             ),
             ...working.slice(partition.rawTailStartIndex),
@@ -707,6 +711,7 @@ function applyPrefixSummary(
     working: Turn[],
     rawTailStartIndex: number,
     transcriptRelativePath: string,
+    sources: readonly ItemKey[],
     prefixSummary?: string,
     compactedRangeHash?: string,
 ): StageMutationResult & { prefixSummary: string } {
@@ -722,10 +727,13 @@ function applyPrefixSummary(
         prefixSummary?.trim() || formatPrefixSummary(compacted),
         transcriptRelativePath,
     )
+    // The prefix reaching here has already been stripped and collapsed, so its
+    // own item keys are stubs; the caller passes the keys that went IN.
     const summaryTurn = synthesizeSummaryTurn(
         compacted,
         summary,
         transcriptRelativePath,
+        sources,
         compactedRangeHash,
     )
     const changedTurns = new Set(compacted.map((turn) => turn.key))
@@ -757,10 +765,9 @@ function synthesizeReferenceTurn(
         stamp: 0,
         role: "user",
         items: [
-            {
-                kind: "synthetic",
+            synthesize(
                 key,
-                text: [
+                [
                     "[Better Compact context pruning applied]",
                     `Older assistant/tool-heavy context was compactified for this request. Raw messages ${first} through ${last} are preserved in the reference transcript below.`,
                     "",
@@ -773,7 +780,11 @@ function synthesizeReferenceTurn(
                     "If exact prior wording, raw tool output, or omitted implementation detail is needed, inspect the reference file instead of guessing.",
                     ...(latestTodoState ? ["", latestTodoState] : []),
                 ].join("\n"),
-            },
+                "reference",
+                // Both call sites pass the pre-stage range, so these are input
+                // keys already; the reference indexes the range whole.
+                itemKeysOf(compacted),
+            ),
         ],
     }
 }
@@ -861,6 +872,7 @@ function synthesizeSummaryTurn(
     compacted: Turn[],
     summary: string,
     transcriptRelativePath: string,
+    sources: readonly ItemKey[],
     compactedRangeHash = rangeHash(compacted),
 ): Turn {
     const key = `better_compact_summary_${compactedRangeHash}`
@@ -871,11 +883,12 @@ function synthesizeSummaryTurn(
         stamp: 0,
         role: "user",
         items: [
-            {
-                kind: "synthetic",
+            synthesize(
                 key,
-                text: ["[Context Summary]", normalizedSummary, "", referenceBlock].join("\n"),
-            },
+                ["[Context Summary]", normalizedSummary, "", referenceBlock].join("\n"),
+                "prefix-summary",
+                sources,
+            ),
             ...compacted.flatMap((turn) => turn.items.filter(isAttachmentReference)),
         ],
     }
