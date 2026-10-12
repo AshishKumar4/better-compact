@@ -1,5 +1,4 @@
 import { resolveCompactionProfile, type CompactionConfig } from "@better-compact/core"
-import type { PluginInput } from "@opencode-ai/plugin"
 import type { RuntimeState, SessionState, WithParts } from "./state"
 import type { Logger } from "./logger"
 import type { PluginConfig } from "./config"
@@ -29,10 +28,6 @@ import {
 } from "./boundary"
 import { getCurrentParams, getCurrentTokenUsage } from "./token-utils"
 import { sendIgnoredMessage } from "./ui/notification"
-
-// Manual and idle-triggered requests can observe the same saved plan.
-// One native handoff per plan prevents duplicate requests and idle retry loops.
-const nativeHandoffs = new WeakSet<object>()
 
 export function createSystemPromptHandler(
     runtime: RuntimeState,
@@ -749,8 +744,7 @@ async function runBetterCompact(input: {
         completeBoundaryJob(input.state, "Complete")
         await saveSessionState(input.state, input.logger)
         const storedPlan = input.state.boundary.activePlan
-        if (finalPlan.needsNativeCompaction && storedPlan && !nativeHandoffs.has(storedPlan)) {
-            nativeHandoffs.add(storedPlan)
+        if (finalPlan.needsNativeCompaction && storedPlan) {
             if (!params.providerId || !params.modelId)
                 throw new Error("Native compaction needs an active model.")
             // Native summarization can invoke the transform hook again. Release
@@ -826,40 +820,8 @@ export function createTextCompleteHandler() {
     }
 }
 
-export function createEventHandler(runtime: RuntimeState, logger: Logger, client?: PluginInput["client"], loadConfig?: () => PluginConfig) {
+export function createEventHandler(runtime: RuntimeState, logger: Logger) {
     return async (input: { event: any }) => {
-        const idle = input.event.type === "session.idle" ||
-            (input.event.type === "session.status" && input.event.properties?.status?.type === "idle")
-        if (idle && client) {
-            const sessionId = input.event.properties?.sessionID
-            if (typeof sessionId !== "string") return
-            const state = runtime.peek(sessionId)
-            const plan = state?.boundary.activePlan
-            const config = loadConfig?.()
-            if (config && (!config.enabled || !config.compaction.automatic || config.compaction.bypassSummaries === false ||
-                (state && compressPermission(state, config) !== "allow"))) return
-            if (!state || !plan?.bypassSummaries || !(state.boundary.nativeCompactionNeeded ?? plan.afterPruneTokens > plan.targetTokens) || nativeHandoffs.has(plan)) return
-            nativeHandoffs.add(plan)
-            try {
-                await runtime.activeCompaction(sessionId)
-                if (state.boundary.activePlan !== plan) return
-                const response = await client.session.messages({ path: { id: sessionId } })
-                const params = getCurrentParams(state, filterMessages(response.data ?? []), logger)
-                if (state.boundary.activePlan !== plan) return
-                const current = loadConfig?.()
-                if (current && (!current.enabled || !current.compaction.automatic || current.compaction.bypassSummaries === false ||
-                    compressPermission(state, current) !== "allow")) {
-                    nativeHandoffs.delete(plan)
-                    return
-                }
-                if (!params.providerId || !params.modelId) throw new Error("Native compaction needs an active model.")
-                await client.session.summarize({ path: { id: sessionId },
-                    body: { providerID: params.providerId, modelID: params.modelId }, throwOnError: true })
-            } catch (error) {
-                logger.error("Native compaction failed", { error: error instanceof Error ? error.message : String(error) })
-            }
-            return
-        }
         if (input.event.type === "session.compacted") {
             const sessionId = input.event.properties?.sessionID
             const state = typeof sessionId === "string" ? runtime.peek(sessionId) : undefined
@@ -867,7 +829,6 @@ export function createEventHandler(runtime: RuntimeState, logger: Logger, client
             // Native compaction rewrote this session's history; the stored
             // plan and job describe context that no longer exists.
             state.boundary.activePlan = null
-            state.boundary.nativeCompactionNeeded = false
             state.boundary.job = null
             await saveSessionState(state, logger).catch((error) => {
                 logger.warn("Failed to persist state reset after native compaction", {

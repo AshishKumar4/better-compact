@@ -322,33 +322,6 @@ test("rolling prefix jobs see stored references rather than original media paylo
     assert.ok(!job.prompt.includes("RAW_MEDIA_PAYLOAD"))
 })
 
-test("replay reports live native pressure after growth below the trigger", async () => {
-    const f = fixture()
-    let snapshot: PlanSnapshot | null = null
-    const engine = createEngine(f.spec, {
-        logger,
-        transcripts: { citablePath: () => "/archive/transcript.md", write: async () => ({}) },
-        plans: {
-            load: () => snapshot,
-            save: (_key, value) => {
-                snapshot = value
-            },
-        },
-    })
-    const request = { ...inputs, targetRatio: 0.7, turns: f.turns }
-    const first = await engine.process(request)
-    assert.equal(first.needsNativeCompaction, false)
-    f.turns.push({
-        key: "new-tail",
-        role: "user",
-        stamp: 7,
-        items: [{ kind: "text", key: "new-text", text: "x".repeat(4_000), handle: {} }],
-    })
-    const replayed = await engine.process({ ...request, force: false })
-    assert.equal(replayed.outcome, "replayed")
-    assert.equal(replayed.needsNativeCompaction, true)
-})
-
 test("a live bypass change during summary work prevents summary persistence and application", async () => {
     const f = fixture()
     f.turns.splice(1, 0, {

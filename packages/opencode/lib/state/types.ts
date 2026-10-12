@@ -59,8 +59,6 @@ export interface BoundaryPlanSnapshot extends PlanSnapshot {
 }
 
 export interface BoundaryState {
-    /** Pressure from the latest transformed request, not the historical plan estimate. */
-    nativeCompactionNeeded?: boolean
     job: BoundaryJobProgress | null
     activePlan: BoundaryPlanSnapshot | null
 }

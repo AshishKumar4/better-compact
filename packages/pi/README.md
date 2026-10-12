@@ -69,7 +69,8 @@ The trigger starts a pruning pass. The target is the desired context size after 
 ### Custom thresholds
 
 Choose `custom` in `/better-compact-settings` (or set `"preset": "custom"` in
-`better-compact.json`) to tune the numbers directly:
+`better-compact.json`) to tune the numbers directly. The numbers apply only under
+`custom`; editing one in the settings panel selects it.
 
 ```json
 {
@@ -108,10 +109,10 @@ stages applied and tokens reclaimed — and keeps the full plan behind
 
 `Bypass Better Compact summaries` is on by default in `/better-compact-settings`, in both pi and OMP.
 It skips assistant-message previews, model-written summaries, and prefix summaries. Earlier pruning stages still run.
-If they cannot reach the target, manual compaction delegates to the host's native compactor.
-OMP uses its configured `compaction.methodOrder`; Better Compact does not keep a second method list.
-Automatic pruning requests native compaction after the active run settles if the target is still unmet.
-The host keeps control of the compaction method; no compaction starts inside a request-transform hook.
+The host's own compaction threshold measures the pruned request, so native compaction runs when pruning alone cannot keep context below it.
+When Better Compact owns OMP compaction, it commits its pruning first, then OMP runs its configured `compaction.methodOrder` over the pruned history.
+Better Compact does not keep a second method list.
+A manual `/better-compact` that cannot reach the target hands the rest to the host's native compactor.
 Turn this switch off to use Better Compact's summary stages.
 
 Create `<agent-dir>/better-compact.json`:
@@ -208,7 +209,7 @@ When Better Compact owns committed compaction, the pruned prefix keeps:
 
 How that prefix is persisted depends on the host. An OMP build with the in-place rewrite seam (`supportsRewrite` on the compaction event) receives each kept entry rewritten in place: user messages stay user messages and no entry is folded into a summary. Stock OMP receives the same prefix as one summary over a whole-turn boundary, the only shape it can persist. The last-resort prefix summary is off by default; set `custom.prefixSummary` to `true` to allow it.
 
-OMP uses its native methods when it owns compaction, when Better Compact cannot produce a valid boundary, or when a pass would free less than the no-progress dead-band.
+OMP uses its native methods when it owns compaction, when Better Compact cannot produce a valid boundary, when a pass would free less than the no-progress dead-band, or when committed pruning still leaves context above OMP's threshold.
 
 When `bypassSummaries` is false, `summaryEffort: "off"` skips model calls but still allows deterministic previews.
 Use `bypassSummaries: true` to disable all Better Compact summarization, including those previews.

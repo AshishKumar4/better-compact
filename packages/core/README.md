@@ -97,9 +97,9 @@ This also refuses cached summary plans. `summariesAllowed: false` only disables 
 For live settings, `engine.process()` accepts a reader: `bypassSummaries: () => settings.bypassSummaries`.
 The engine rechecks it after asynchronous work before applying a summary.
 
-When pruning leaves context above the target, `plan.needsNativeCompaction` is true.
-`engine.process()` also returns this flag after rebuilding or replaying a prune-only plan.
-The host then selects its native compaction method. Core does not invoke a provider or duplicate a host's method order.
+Automatic passes need no handoff. The host's own compaction threshold measures the pruned request, so native compaction runs exactly when pruning alone cannot keep context below it.
+For an explicit compaction, `plan.needsNativeCompaction` is true when pruning leaves context above the target; the host can then run its own compactor.
+Core does not invoke a provider or duplicate a host's method order.
 The pi, OMP, and OpenCode settings default `bypassSummaries` to true; library callers choose the option explicitly.
 
 ## Development

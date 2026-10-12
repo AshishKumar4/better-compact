@@ -183,7 +183,6 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
      * the manual `/compact` path.
      */
     let pendingTrigger: CompactionTrigger | undefined
-    let nativeCompactionSession: string | undefined
 
     /**
      * Oh My Pi keeps one extension runtime across new/resume/fork/handoff
@@ -195,7 +194,6 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
     const rehydrate = async (ctx: ExtensionContext): Promise<void> => {
         if (!runtime.owns(ctx)) return
         pendingTrigger = undefined
-        nativeCompactionSession = undefined
         await runtime.rehydrate(ctx)
     }
 
@@ -204,9 +202,9 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
     pi.on("session_branch", (_event, ctx) => rehydrate(ctx))
     pi.on("session_tree", (_event, ctx) => rehydrate(ctx))
     pi.on("session_compact", (_event, ctx) => rehydrate(ctx))
+    pi.on("session_shutdown", (_event, ctx) => runtime.release(ctx))
 
     pi.on("auto_compaction_start", (event) => {
-        nativeCompactionSession = undefined
         pendingTrigger = event.reason
     })
 
@@ -214,34 +212,10 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
         pendingTrigger = undefined
     })
 
-    pi.on("agent_end", (_event, ctx) => {
-        const sessionId = ctx.sessionManager.getSessionId()
-        // Leave the event handler before invoking a method that aborts the
-        // current run. An already-started native compaction clears the request.
-        setImmediate(() => {
-            if (
-                nativeCompactionSession !== sessionId ||
-                ctx.sessionManager.getSessionId() !== sessionId ||
-                !ctx.isIdle()
-            )
-                return
-            nativeCompactionSession = undefined
-            if (!runtime.config.automatic || runtime.config.bypassSummaries === false) return
-            void ctx
-                .compact()
-                .catch((error) =>
-                    logger.warn("Native compaction failed", { error: errorText(error) }),
-                )
-        })
-    })
-
     pi.on("context", async (event, ctx) => {
         try {
             if (!runtime.owns(ctx)) return
             const result = await runtime.transform(ctx, event.messages)
-            nativeCompactionSession = result?.needsNativeCompaction
-                ? ctx.sessionManager.getSessionId()
-                : undefined
             return result ? { messages: result.messages } : undefined
         } catch (error) {
             // A failed prune must never break the request; it goes out unpruned.
@@ -309,11 +283,12 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
 
                     // Gate before paying for summaries, then compose again on the
                     // plan that is actually committed so the answer and the text
-                    // agree. `undefined` means the host's native method runs.
-                    if (!plan || answer(plan) === undefined) {
+                    // agree. A decline means the host's native method runs.
+                    const gate = answer(plan)
+                    if (!plan || "declined" in gate) {
                         logger.warn("Better Compact declined this compaction", {
                             trigger,
-                            reason: plan ? "no progress" : "no plan",
+                            reason: "declined" in gate ? gate.declined : "no plan",
                         })
                         return
                     }
@@ -330,9 +305,10 @@ export default async function betterCompactOmp(pi: ExtensionAPI) {
                     const finalPlan = await runtime.summarizeNow(ctx, turns, inputs, plan, deadline)
 
                     const final = answer(finalPlan)
-                    if (!final) {
+                    if ("declined" in final) {
                         logger.warn("Better Compact declined this compaction after summarizing", {
                             trigger,
+                            reason: final.declined,
                         })
                         return
                     }

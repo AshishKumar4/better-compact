@@ -54,6 +54,11 @@ export interface RuntimeHost<TCtx, TNative> {
     ui(ctx: TCtx): RuntimeUi
     sessionId(ctx: TCtx): string
     sessionDir(ctx: TCtx): string
+    /**
+     * The session's manager. Its identity is the bound session's: stable across
+     * new/resume/switch in one runner, fresh for a revived session, and shared
+     * with any auxiliary agent the host runs over the same journal.
+     */
     branch(ctx: TCtx): BranchReader
     /** The durable context for the current branch, as the host rebuilds it. */
     durableMessages(ctx: TCtx): TNative[]
@@ -84,7 +89,6 @@ export interface RuntimeHost<TCtx, TNative> {
 export interface PlannedTransform<TNative> {
     messages: TNative[]
     plan: BoundaryContextPlan | undefined
-    needsNativeCompaction?: boolean
 }
 
 export interface Runtime<TCtx, TNative> {
@@ -95,6 +99,8 @@ export interface Runtime<TCtx, TNative> {
     readonly generation: number
     /** Whether this instance drives the session the event belongs to. */
     owns(ctx: TCtx): boolean
+    /** Hands the session back on `session_shutdown`, so a later runner can drive it. */
+    release(ctx: TCtx): void
     /** Re-read config and re-adopt the branch's plan. Bumps {@link generation}. */
     rehydrate(ctx: TCtx): Promise<void>
     /** The durable context for the current branch, as the host rebuilds it. */
@@ -197,14 +203,18 @@ export function createRuntime<TCtx, TNative>(
         },
 
         owns(ctx) {
-            if (ownership.owns(host.sessionId(ctx))) return true
-            if (!duplicateWarned) {
+            const claim = ownership.claim(host.branch(ctx))
+            if (claim === "duplicate" && !duplicateWarned) {
                 duplicateWarned = true
                 logger.warn(
                     "Better Compact is loaded twice in this session; the duplicate is inert. Install it one way only — as a plugin, a drop-in extension, or an explicit path.",
                 )
             }
-            return false
+            return claim === "owner"
+        },
+
+        release(ctx) {
+            ownership.release(host.branch(ctx))
         },
 
         async rehydrate(ctx) {
@@ -258,7 +268,6 @@ export function createRuntime<TCtx, TNative>(
             return {
                 messages: codec.decode(result.turns, messages),
                 plan,
-                needsNativeCompaction: result.needsNativeCompaction,
             }
         },
 

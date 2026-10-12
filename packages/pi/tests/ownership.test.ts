@@ -1,60 +1,60 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createSessionOwnership, resetSessionOwnership } from "../src/ownership"
+import { createSessionOwnership } from "../src/ownership"
+import type * as Ownership from "../src/ownership"
 
-test("one instance owns every session it sees first", () => {
-    resetSessionOwnership()
-    const only = createSessionOwnership()
+// Each `{}` stands in for one runner's session manager: the identity the
+// hosts give a bound session.
 
-    assert.equal(only.owns("session-a"), true)
-    assert.equal(only.owns("session-a"), true, "ownership must be stable across events")
-    assert.equal(
-        only.owns("session-b"),
-        true,
-        "a new session in the same process is not a duplicate",
-    )
-    assert.equal(only.displaced, false)
-})
-
-test("a second copy in the same session loses and reports it", () => {
-    resetSessionOwnership()
-    const first = createSessionOwnership()
-    const second = createSessionOwnership()
-
-    assert.equal(first.owns("session-a"), true)
-    assert.equal(second.owns("session-a"), false, "the duplicate must not drive the session")
-    assert.equal(second.displaced, true)
-    assert.equal(first.owns("session-a"), true, "the winner keeps the session")
-})
-
-test("later sessions and subagents still get an owner", () => {
-    // The bug this replaces: the hosts load extensions once per session, binding
-    // each to that session's own ExtensionAPI — subagents included. A
-    // process-wide "already loaded" flag therefore disabled Better Compact for
-    // every session after the first.
-    resetSessionOwnership()
+test("one instance drives its session across events, and each new session gets its own", () => {
     const root = createSessionOwnership()
-    assert.equal(root.owns("root-session"), true)
+    const session = {}
+    assert.equal(root.claim(session), "owner")
+    assert.equal(root.claim(session), "owner", "ownership must be stable across events")
 
-    for (const subagent of ["subagent-1", "subagent-2", "subagent-3"]) {
-        const instance = createSessionOwnership()
-        assert.equal(
-            instance.owns(subagent),
-            true,
-            `${subagent} must get its own working instance, not be treated as a duplicate`,
-        )
-        assert.equal(instance.displaced, false)
+    // Subagents bind their own runner and manager; none of them is a duplicate.
+    for (const subagent of [{}, {}, {}]) {
+        assert.equal(createSessionOwnership().claim(subagent), "owner")
     }
 })
 
-test("a displaced instance stays inert for that session but can own another", () => {
-    resetSessionOwnership()
+test("a revived session gets a fresh manager, so a gone runner cannot keep it", () => {
+    // The bug this replaces: ownership keyed on the session id string. A
+    // revived or reopened session reuses the id, and the instance bound to the
+    // runner that served it first held the claim forever, so the live runner
+    // stayed inert and nothing pruned that session.
     const first = createSessionOwnership()
-    const second = createSessionOwnership()
+    assert.equal(first.claim({}), "owner")
+    const revived = createSessionOwnership()
+    assert.equal(revived.claim({}), "owner")
+})
 
-    first.owns("shared")
-    assert.equal(second.owns("shared"), false)
-    // A session the winner never saw is still claimable: being displaced once
-    // must not permanently disable an instance.
-    assert.equal(second.owns("its-own"), true)
+test("an auxiliary agent on the parent's journal stays inert without a warning", () => {
+    const parent = createSessionOwnership()
+    const shared = {}
+    assert.equal(parent.claim(shared), "owner")
+    assert.equal(createSessionOwnership().claim(shared), "auxiliary")
+    assert.equal(parent.claim(shared), "owner", "the parent keeps driving its session")
+})
+
+test("a second installed copy of the plugin is reported as a duplicate", async () => {
+    // Dynamic on purpose: a distinct specifier evaluates the module a second
+    // time, which is exactly what a second install of the plugin does.
+    const secondCopy: typeof Ownership = await import(
+        new URL("../src/ownership.ts?second-install", import.meta.url).href
+    )
+    const session = {}
+    assert.equal(createSessionOwnership().claim(session), "owner")
+    assert.equal(secondCopy.createSessionOwnership().claim(session), "duplicate")
+})
+
+test("an owner that shuts down hands its session to the next runner", () => {
+    const session = {}
+    const before = createSessionOwnership()
+    const after = createSessionOwnership()
+    assert.equal(before.claim(session), "owner")
+    after.release(session)
+    assert.equal(after.claim(session), "auxiliary", "only the holder can release a claim")
+    before.release(session)
+    assert.equal(after.claim(session), "owner")
 })

@@ -203,8 +203,9 @@ export interface RewriteEntry {
  *   committed over the already-pruned branch (the last-resort prefix summary).
  * - `compaction` alone: the host has no rewrite seam, so the pruned prefix is
  *   committed as one summary the way stock Oh My Pi persists it.
- * - `undefined`: Better Compact declines — too little is freed to move the
- *   host's threshold, or nothing message-shaped changed.
+ *
+ * A {@link CompactionDecline} hands the pass to the host's own method, with
+ * the reason it did.
  */
 export interface CompactionAnswer {
     rewrite?: RewriteEntry[]
@@ -215,6 +216,12 @@ export interface CompactionAnswer {
     /** Tokens the answer frees from the journal, on the codec's scale. */
     tokensFreed: number
 }
+
+export interface CompactionDecline {
+    declined: string
+}
+
+const TOO_LITTLE_FREED = "pruning frees too little to commit"
 
 /**
  * Compose the handler answer for one plan.
@@ -230,34 +237,37 @@ export interface CompactionAnswer {
  * Without the seam the only durable shape is one summary plus a whole-turn
  * boundary, so the pruned prefix is rendered as text and the dead-band is the
  * plan's projection, which is exactly what that summary reclaims.
+ *
+ * With summaries bypassed, a rewrite that leaves context above the host's
+ * threshold is still the right answer: the seam commits the pruning, then
+ * runs the configured method order over the pruned branch. Declining instead
+ * would hand the native method the unpruned history.
  */
 export function buildCompactionAnswer(
     input: CompactionDecisionInput,
     spec: LadderSpec,
     host: { supportsRewrite: boolean },
-): CompactionAnswer | undefined {
+): CompactionAnswer | CompactionDecline {
     const { plan } = input
-    if (!plan) return undefined
-    // Do not claim completion through an assistant preview or prefix summary.
-    // An insufficient prune-only plan delegates the whole maintenance pass to
-    // the host; its configured method order remains authoritative.
-    if (plan.bypassSummaries && plan.needsNativeCompaction) return undefined
+    if (!plan) return { declined: "no plan for this context" }
 
     if (!host.supportsRewrite) {
-        // A stock host cannot persist pruning without a summary boundary.
-        // In prune-only mode the native compactor must supply that boundary.
-        if (plan.bypassSummaries) return undefined
+        // A stock host persists pruning only as a summary boundary, which
+        // prune-only mode must not write; its own method compacts instead.
+        if (plan.bypassSummaries) {
+            return { declined: "summaries are bypassed and this host can only persist a summary" }
+        }
         const tokensFreed = Math.max(0, plan.beforeTokens - plan.afterPruneTokens)
-        if (tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return undefined
+        if (tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return { declined: TOO_LITTLE_FREED }
         const decision = decideCompaction(input)
-        if (decision.kind === "decline") return undefined
+        if (decision.kind === "decline") return { declined: decision.reason }
         const summary = formatDurableCompaction(plan, input.turns, spec)
-        if (!summary) return undefined
+        if (!summary) return { declined: "nothing to summarize before the boundary" }
         return { compaction: { summary, firstKeptEntryId: decision.firstKeptEntryId }, tokensFreed }
     }
 
     const rewrite = rewriteEntriesForPlan(plan, input.turns, input.branchEntries, spec)
-    if (rewrite.tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return undefined
+    if (rewrite.tokensFreed < COMPACTION_NO_PROGRESS_TOKENS) return { declined: TOO_LITTLE_FREED }
     const answer: CompactionAnswer = { rewrite: rewrite.entries, tokensFreed: rewrite.tokensFreed }
 
     if (plan.requiresCustomCompaction) {

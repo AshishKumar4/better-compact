@@ -14,13 +14,21 @@ import {
     formatDurableCompaction,
     rewriteEntriesForPlan,
     type BranchEntry,
+    type CompactionAnswer,
     type CompactionDecision,
+    type CompactionDecline,
     type CompactionTrigger,
 } from "../src/omp/compaction"
 import { ompSpec } from "../src/omp/codec"
 import { piCodec, type PiMessage } from "../src/codec"
 import { assistantMessage, toolResultMessage, userMessage } from "./fixtures"
 import { overTriggerConversation } from "./helpers"
+
+/** The answer itself, or a failure naming why Better Compact declined. */
+function answered(result: CompactionAnswer | CompactionDecline): CompactionAnswer {
+    if ("declined" in result) assert.fail(`declined: ${result.declined}`)
+    return result
+}
 
 // `src/omp.ts` itself imports Oh My Pi at runtime, which only loads under Bun
 // (the host's source uses `with { type: "text" }` imports). The decision policy,
@@ -306,10 +314,12 @@ test("eighteen user messages survive as user entries across four cumulative rewr
         const { plan, turns } = planFor(messages, contextLimit, {
             tailBudgetTokens: { floor: 1_000, ceiling: 3_000 },
         })
-        const answer = buildCompactionAnswer(
-            { trigger: "manual", plan, turns, messages, branchEntries },
-            ompSpec,
-            { supportsRewrite: true },
+        const answer = answered(
+            buildCompactionAnswer(
+                { trigger: "manual", plan, turns, messages, branchEntries },
+                ompSpec,
+                { supportsRewrite: true },
+            ),
         )
         assert.ok(answer?.rewrite && answer.rewrite.length > 0, `round ${round} must rewrite`)
         for (const { entryId, message } of answer.rewrite) {
@@ -357,16 +367,18 @@ test("an oversized assistant turn is reduced in place, never kept raw or split",
     assert.equal(plan.rawTailItemBoundary, undefined, "the budget never splits a turn")
     assert.equal(turns[plan.rawTailStartIndex]?.role, "user")
 
-    const answer = buildCompactionAnswer(
-        {
-            trigger: "manual",
-            plan,
-            turns,
-            messages: branch.messages,
-            branchEntries: branch.entries,
-        },
-        ompSpec,
-        { supportsRewrite: true },
+    const answer = answered(
+        buildCompactionAnswer(
+            {
+                trigger: "manual",
+                plan,
+                turns,
+                messages: branch.messages,
+                branchEntries: branch.entries,
+            },
+            ompSpec,
+            { supportsRewrite: true },
+        ),
     )
     assert.ok(answer?.rewrite && answer.rewrite.length > 0)
     assert.equal(answer.compaction, undefined, "no durable boundary is needed for a rewrite")
@@ -416,7 +428,7 @@ test("a rewrite under the dead-band declines instead of inventing a summary", ()
         ompSpec,
         { supportsRewrite: true },
     )
-    assert.equal(answer, undefined)
+    assert.ok("declined" in answer)
 })
 
 test("prefixSummaryAllowed false answers the last resort with a rewrite, never a merged prefix", () => {
@@ -452,7 +464,7 @@ test("prefixSummaryAllowed false answers the last resort with a rewrite, never a
         ompSpec,
         { supportsRewrite: true },
     )
-    if (answer !== undefined) {
+    if (!("declined" in answer)) {
         assert.ok(answer.rewrite && answer.rewrite.length > 0)
         assert.equal(answer.compaction, undefined)
     }
@@ -499,20 +511,18 @@ test("the dead-band measures what the journal actually frees, not the plan's pro
         rewrite.tokensFreed < COMPACTION_NO_PROGRESS_TOKENS,
         "the durable rewrite must fall short of it, which is the whole point",
     )
-    assert.equal(
-        buildCompactionAnswer(
-            {
-                trigger: "threshold",
-                plan,
-                turns,
-                messages: branch.messages,
-                branchEntries: branch.entries,
-            },
-            ompSpec,
-            { supportsRewrite: true },
-        ),
-        undefined,
+    const answer = buildCompactionAnswer(
+        {
+            trigger: "threshold",
+            plan,
+            turns,
+            messages: branch.messages,
+            branchEntries: branch.entries,
+        },
+        ompSpec,
+        { supportsRewrite: true },
     )
+    assert.ok("declined" in answer)
 })
 
 test("reprocessing an already-rewritten branch emits nothing for unchanged entries", () => {
@@ -556,16 +566,18 @@ test("a host without the rewrite seam gets the pruned prefix as one durable summ
     const messages = overTriggerConversation()
     const branch = branchOf(messages)
     const { plan, turns } = planFor(messages)
-    const answer = buildCompactionAnswer(
-        {
-            trigger: "threshold",
-            plan,
-            turns,
-            messages: branch.messages,
-            branchEntries: branch.entries,
-        },
-        ompSpec,
-        { supportsRewrite: false },
+    const answer = answered(
+        buildCompactionAnswer(
+            {
+                trigger: "threshold",
+                plan,
+                turns,
+                messages: branch.messages,
+                branchEntries: branch.entries,
+            },
+            ompSpec,
+            { supportsRewrite: false },
+        ),
     )
     assert.ok(answer?.compaction)
     assert.equal(answer.rewrite, undefined)
@@ -575,25 +587,34 @@ test("a host without the rewrite seam gets the pruned prefix as one durable summ
     assert.equal(answer.tokensFreed, plan.beforeTokens - plan.afterPruneTokens)
 })
 
-test("prune-only plans decline to native compaction when the target cannot be met", () => {
+test("a prune-only plan that misses the target still commits its pruning before native compaction", () => {
+    // With summaries bypassed, pruning alone often cannot reach the target.
+    // Declining would hand the host's own method the unpruned history, so on
+    // a host with the rewrite seam the answer is the pruning itself: the host
+    // commits it, then runs its configured method order over the pruned branch.
     const messages = overTriggerConversation()
     const branch = branchOf(messages)
     const { plan, turns } = planFor(messages, 500, { bypassSummaries: true })
     assert.equal(plan.needsNativeCompaction, true)
     assert.equal(plan.requiresCustomCompaction, false)
     assert.deepEqual(plan.summaryJobs, [])
-    for (const supportsRewrite of [false, true]) {
-        assert.equal(
-            buildCompactionAnswer(
-                { trigger: "threshold", plan, turns, messages, branchEntries: branch.entries },
-                ompSpec,
-                { supportsRewrite },
-            ),
-            undefined,
-        )
+    const input = {
+        trigger: "threshold" as const,
+        plan,
+        turns,
+        messages,
+        branchEntries: branch.entries,
     }
-})
 
+    const seam = answered(buildCompactionAnswer(input, ompSpec, { supportsRewrite: true }))
+    assert.ok(seam.rewrite && seam.rewrite.length > 0)
+    assert.equal(seam.compaction, undefined, "no summary is written while summaries are bypassed")
+    assert.ok(seam.rewrite.every(({ message }) => message.role !== "user"))
+
+    // A stock host can persist pruning only as a summary, which bypass forbids,
+    // so its own method compacts instead.
+    assert.ok("declined" in buildCompactionAnswer(input, ompSpec, { supportsRewrite: false }))
+})
 test("snapcompact frame entries pass through a rewrite byte-identical", () => {
     // A session that ran OMP snapcompact carries compactionSummary entries
     // before the switch. They encode as opaque items the ladder never enters,
@@ -627,16 +648,18 @@ test("snapcompact frame entries pass through a rewrite byte-identical", () => {
     const { plan, turns } = planFor(messages, 8_000, {
         tailBudgetTokens: { floor: 500, ceiling: 2_000 },
     })
-    const answer = buildCompactionAnswer(
-        {
-            trigger: "manual",
-            plan,
-            turns,
-            messages: branch.messages,
-            branchEntries: branch.entries,
-        },
-        ompSpec,
-        { supportsRewrite: true },
+    const answer = answered(
+        buildCompactionAnswer(
+            {
+                trigger: "manual",
+                plan,
+                turns,
+                messages: branch.messages,
+                branchEntries: branch.entries,
+            },
+            ompSpec,
+            { supportsRewrite: true },
+        ),
     )
     assert.ok(answer?.rewrite)
     const frame = messages[1]

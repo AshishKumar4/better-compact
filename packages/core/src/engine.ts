@@ -5,7 +5,7 @@ import {
     type BuildPlanInputs,
     type LadderSpec,
 } from "./ladder.js"
-import { attachmentCodec, attachmentKey } from "./attachments.js"
+import { attachmentKey } from "./attachments.js"
 import type { Turn } from "./ir.js"
 import {
     toPlanSnapshot,
@@ -16,11 +16,10 @@ import {
 import type { EnginePorts, Logger } from "./ports.js"
 import { writeTranscript } from "./transcript.js"
 
-export type ProcessResult = (
+export type ProcessResult =
     | { outcome: "unchanged" }
     | { outcome: "replayed"; turns: Turn[] }
     | { outcome: "planned"; turns: Turn[]; plan: BoundaryContextPlan }
-) & { needsNativeCompaction?: boolean }
 
 export interface Engine {
     process(request: {
@@ -74,21 +73,7 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
                 const replayed = force
                     ? null
                     : replayPlanSnapshot(turns, cached, spec, { bypassSummaries })
-                if (replayed)
-                    return {
-                        outcome: "replayed",
-                        turns: replayed,
-                        ...(bypassSummaries
-                            ? {
-                                  needsNativeCompaction:
-                                      attachmentCodec(spec.codec, spec.attachments).estimateTurns(
-                                          replayed,
-                                      ) +
-                                          (cached.overheadTokens ?? 0) >
-                                      cached.targetTokens,
-                              }
-                            : {}),
-                    }
+                if (replayed) return { outcome: "replayed", turns: replayed }
                 staleSnapshotCleared = true
                 priorPlan = cached
             }
@@ -173,14 +158,7 @@ export function createEngine(spec: LadderSpec, ports: EnginePorts): Engine {
                 transcript: plan.transcript.relativePath,
                 stages: plan.stages.map((stage) => stage.name),
             })
-            return {
-                outcome: "planned",
-                turns: transformed,
-                plan,
-                ...(plan.bypassSummaries
-                    ? { needsNativeCompaction: plan.needsNativeCompaction }
-                    : {}),
-            }
+            return { outcome: "planned", turns: transformed, plan }
         },
     }
 }

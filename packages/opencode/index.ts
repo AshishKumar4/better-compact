@@ -104,7 +104,7 @@ const server: Plugin = (async (ctx) => {
             hostPermissions,
             loadConfig,
         ),
-        event: createEventHandler(runtime, logger, ctx.client, loadConfig),
+        event: createEventHandler(runtime, logger),
         tool: {},
         config: async (opencodeConfig) => {
             if (

@@ -96,7 +96,11 @@ export interface BoundaryContextOptions {
 }
 
 export interface BoundaryContextPlan {
-    /** The host should use its native compactor; Better Compact will not summarize. */
+    /**
+     * Prune-only plans: pruning alone did not reach the target. A host running
+     * an explicit compaction can hand the rest to its own compactor. Automatic
+     * passes need nothing: the host's threshold already sees the pruned request.
+     */
     needsNativeCompaction?: boolean
     attachmentPolicyKey?: string
     attachmentLinks?: Record<string, string>

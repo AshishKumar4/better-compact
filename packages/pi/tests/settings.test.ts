@@ -10,6 +10,9 @@ interface CapturedSettings {
     change(id: string, value: string): void
     done(): void
     result?: { changed: boolean; config: CompactionConfig }
+    /** Rows the panel repainted, by id. */
+    shown: Map<string, string>
+    updateValue(id: string, value: string): void
 }
 
 interface CapturedInput {
@@ -43,10 +46,13 @@ test("host-specific rows share the settings panel and receive changes", () => {
     let result: { changed: boolean; config: CompactionConfig } | undefined
     const ui: HostSettingsUi<CapturedSettings, CapturedInput> = {
         createSettingsList(items, _visibleRows, change, done) {
+            const shown = new Map<string, string>()
             captured = {
                 items,
                 change,
                 done,
+                shown,
+                updateValue: (id, value) => shown.set(id, value),
                 get result() {
                     return result
                 },
@@ -97,10 +103,13 @@ test("shared rows keep their existing behavior when host rows are present", () =
     let result: { changed: boolean; config: CompactionConfig } | undefined
     const ui: HostSettingsUi<CapturedSettings, CapturedInput> = {
         createSettingsList(items, _visibleRows, change, done) {
+            const shown = new Map<string, string>()
             captured = {
                 items,
                 change,
                 done,
+                shown,
+                updateValue: (id, value) => shown.set(id, value),
                 get result() {
                     return result
                 },
@@ -124,10 +133,13 @@ test("custom numeric rows accept in-range input and refuse dead configuration", 
     let captured: CapturedSettings | undefined
     const ui: HostSettingsUi<CapturedSettings, CapturedInput> = {
         createSettingsList(items, _visibleRows, change, done) {
+            const shown = new Map<string, string>()
             captured = {
                 items,
                 change,
                 done,
+                shown,
+                updateValue: (id, value) => shown.set(id, value),
                 get result() {
                     return seen
                 },
@@ -150,9 +162,18 @@ test("custom numeric rows accept in-range input and refuse dead configuration", 
     captured.change("custom.targetPercent", "35")
     captured.done()
     assert.equal(seen?.config.custom.triggerPercent, 75)
+    // Custom numbers apply only under the custom strength, so editing one
+    // selects it, and the strength row shows that.
+    assert.equal(seen?.config.preset, "custom")
+    assert.equal(captured.shown.get("preset"), "custom")
     captured.change("custom.triggerPercent", "30")
     captured.done()
     assert.equal(seen?.config.custom.triggerPercent, 75)
+    assert.equal(
+        captured.shown.get("custom.triggerPercent"),
+        "75",
+        "a refused edit shows the kept value",
+    )
     captured.change("custom.triggerPercent", "500")
     captured.done()
     assert.equal(seen?.config.custom.triggerPercent, 75)

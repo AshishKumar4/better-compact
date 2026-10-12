@@ -88,25 +88,12 @@ function createPiHost(pi: ExtensionAPI): RuntimeHost<ExtensionContext, PiAgentMe
 export default function betterCompact(pi: ExtensionAPI) {
     const runtime = createRuntime(createPiHost(pi))
     let warnedNativeCompaction = false
-    let nativeCompactionSession: string | undefined
 
     pi.on("session_start", async (_event, ctx) => {
-        nativeCompactionSession = undefined
         if (!runtime.owns(ctx)) return
         await runtime.rehydrate(ctx)
     })
-    pi.on("session_compact", () => {
-        nativeCompactionSession = undefined
-    })
-    pi.on("agent_settled", (_event, ctx) => {
-        if (nativeCompactionSession !== ctx.sessionManager.getSessionId()) return
-        nativeCompactionSession = undefined
-        if (!runtime.config.automatic || runtime.config.bypassSummaries === false) return
-        ctx.compact({
-            onError: (error) =>
-                ctx.ui.notify(`Native compaction failed: ${error.message}`, "warning"),
-        })
-    })
+    pi.on("session_shutdown", (_event, ctx) => runtime.release(ctx))
 
     // Better Compact prunes before native compaction would trigger, but pi
     // exposes no way to supply the compacted result, so the knob belongs to the
@@ -125,9 +112,6 @@ export default function betterCompact(pi: ExtensionAPI) {
         try {
             if (!runtime.owns(ctx)) return
             const result = await runtime.transform(ctx, event.messages)
-            nativeCompactionSession = result?.needsNativeCompaction
-                ? ctx.sessionManager.getSessionId()
-                : undefined
             return result ? { messages: result.messages } : undefined
         } catch (error) {
             // A failed prune must never break the request; it goes out unpruned.

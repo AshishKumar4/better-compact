@@ -57,7 +57,13 @@ export interface HostSettingsItem<TComponent = unknown> {
  * the host built, so the host's real `Component` type flows through untouched
  * instead of being flattened into {@link HostComponent}.
  */
-export interface HostSettingsUi<TList, TInput = TList> {
+/** What the panel needs from the list the host built. */
+export interface HostSettingsList {
+    /** Repaints one row, for an edit that changed or refused another value. */
+    updateValue(id: string, value: string): void
+}
+
+export interface HostSettingsUi<TList extends HostSettingsList, TInput = TList> {
     createSettingsList(
         items: HostSettingsItem<TInput>[],
         visibleRows: number,

@@ -65,7 +65,6 @@ async function main(): Promise<void> {
 
     let nativeCompactions = 0
     const ctx = {
-        isIdle: () => true,
         hasUI: false,
         mode: "print" as const,
         model: { id: "smoke/model", contextWindow, input: ["text"], provider: "smoke" },
@@ -199,14 +198,14 @@ async function main(): Promise<void> {
             : message,
     )
     await call("context", { messages: pressured })
-    await call("agent_end", {})
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    assert.equal(nativeCompactions, 1, "an unmet prune-only target must delegate after the run")
-    await call("agent_end", {})
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    assert.equal(nativeCompactions, 1, "a native handoff must not loop on repeated end events")
+    // Oh My Pi's own threshold measures this pruned request, so it alone decides
+    // when native compaction runs; Better Compact never forces one after a turn.
+    assert.equal(recorded.handlers.has("agent_end"), false)
+    assert.equal(nativeCompactions, 0, "an unmet target must not force a native compaction")
+    label("escalation is left to Oh My Pi's own compaction threshold")
 
-    // The duplicate saw the same session second, so it must add nothing. If it
+    // The second instance comes from the same plugin copy and saw the session
+    // second, so it is an auxiliary binding: inert, and not reported. If it
     // were live, this second pass would re-plan the already-pruned request.
     const duplicateContext = recorded.handlers.get("context")
     const duplicateHandler = duplicate.handlers.get("context")
@@ -219,10 +218,10 @@ async function main(): Promise<void> {
         "the losing instance must leave the request alone, not prune it again",
     )
     assert.ok(
-        fileLog.some((message) => message.includes("loaded twice")),
-        "the duplicate warning must reach the host's file logger, not stderr",
+        !fileLog.some((message) => message.includes("loaded twice")),
+        "a second binding of the same copy is not an installation mistake",
     )
-    label("the duplicate instance stayed inert for a session it does not own")
+    label("the second instance stayed inert for a session it does not own")
 
     const preparation = {
         firstKeptEntryId: branch.entries.at(-3)!.id,
@@ -392,6 +391,14 @@ async function main(): Promise<void> {
     label(
         `host replayed the rewrite as ${committed.length} messages, ${size(messages) - size(committed)} chars smaller`,
     )
+
+    // When the owning runner shuts down, the next one bound to the session
+    // takes it over instead of finding it held by an instance that is gone.
+    await call("session_shutdown", {})
+    const handedOver = (await duplicateHandler({ type: "context", messages: pressured }, ctx)) as
+        { messages?: unknown[] } | undefined
+    assert.ok(handedOver?.messages, "the next runner must drive the session after shutdown")
+    label("session ownership passed to the next runner on shutdown")
 
     process.stdout.write("\nOK — Better Compact owns compaction in Oh My Pi.\n")
 }

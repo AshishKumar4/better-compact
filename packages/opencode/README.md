@@ -44,7 +44,7 @@ JSONC files are preserved when present.
 ## Configuration
 
 `Bypass Better Compact summaries` defaults to on in the settings panel (`compaction.bypassSummaries: true`).
-Pruning still runs, but assistant previews and prefix summaries do not. Native automatic compaction remains under OpenCode's control.
+Pruning still runs, but assistant previews and prefix summaries do not. Native automatic compaction remains under OpenCode's control, and its threshold measures the pruned request.
 A manual Better Compact run that cannot reach its target requests OpenCode's native compaction.
 Set the switch to off to enable Better Compact's summary stages.
 

@@ -4,7 +4,7 @@ import type {
     CompactionPreset,
     SummaryEffort,
 } from "@better-compact/core"
-import type { HostSettingsItem, HostSettingsUi } from "./host"
+import type { HostSettingsItem, HostSettingsList, HostSettingsUi } from "./host"
 
 const PRESETS: CompactionPreset[] = ["light", "moderate", "max"]
 const EFFORTS: SummaryEffort[] = ["inherit", "low", "medium", "high", "max", "off"]
@@ -80,7 +80,7 @@ export interface AdditionalSetting<TComponent = unknown> extends HostSettingsIte
 // The host ships the SettingsList widget and its theme, so the panel matches
 // every other settings surface in that host instead of inventing a look. Each
 // entrypoint injects them from its own package scope.
-export function createSettingsComponent<TList, TInput = TList>(
+export function createSettingsComponent<TList extends HostSettingsList, TInput = TList>(
     ui: HostSettingsUi<TList, TInput>,
     current: CompactionConfig,
     done: (result: SettingsResult) => void,
@@ -149,7 +149,7 @@ export function createSettingsComponent<TList, TInput = TList>(
         ...additional.map(({ onChange: _onChange, ...item }) => item),
     ]
 
-    return ui.createSettingsList(
+    const list = ui.createSettingsList(
         items,
         12,
         (id, value) => {
@@ -163,16 +163,28 @@ export function createSettingsComponent<TList, TInput = TList>(
                 config = { ...config, custom: { ...custom(), prefixSummary: value === "on" } }
             else if (id.startsWith("custom.")) {
                 const bounds = CUSTOM_NUMERIC.find((row) => `custom.${row.key}` === id)
-                if (!bounds || value.trim() === "") return
+                if (!bounds) return
                 const parsed = Math.round(Number(value))
-                // A trigger at or below the target can never fire: keep the
-                // current value instead of persisting dead configuration.
-                if (!Number.isFinite(parsed) || parsed < bounds.min || parsed > bounds.max) return
                 const next = { ...custom(), [bounds.key]: parsed }
-                if (next.triggerPercent <= next.targetPercent) return
-                config = { ...config, custom: next }
+                // Out of range, or a trigger at or below the target, which can
+                // never fire: keep the current value and show it again.
+                if (
+                    value.trim() === "" ||
+                    !Number.isFinite(parsed) ||
+                    parsed < bounds.min ||
+                    parsed > bounds.max ||
+                    next.triggerPercent <= next.targetPercent
+                ) {
+                    list.updateValue(id, String(custom()[bounds.key]))
+                    return
+                }
+                // Custom numbers apply only under the custom strength. Editing
+                // one selects it; otherwise the edit is saved and ignored.
+                config = { ...config, preset: "custom", custom: next }
+                list.updateValue("preset", "custom")
             } else additional.find((item) => item.id === id)?.onChange(value)
         },
         () => done({ changed, config }),
     )
+    return list
 }

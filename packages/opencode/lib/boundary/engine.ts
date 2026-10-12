@@ -61,7 +61,6 @@ export async function processBoundaryTransform(input: {
         summariesAllowed: input.summariesAllowed,
         summarize: input.summariesAllowed === false ? undefined : input.summarize,
     })
-    input.state.boundary.nativeCompactionNeeded = result.needsNativeCompaction === true
     if (result.outcome === "unchanged") return null
     const decoded = openCodeCodec.decode(result.turns, input.messages)
     input.messages.length = 0
