@@ -112,7 +112,19 @@ jobs:
             - name: Install latest OpenCode
               if: matrix.opencode == 'latest'
               run: curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
-            - run: node packages/opencode/scripts/smoke-opencode-install.mjs "$HOME/.opencode/bin/opencode" "better-compact@$(node -p 'require("./packages/opencode/package.json").version')"
+            # npm can answer "No matching version" for a minute or more after
+            # publish returns, so install only once the registry serves it.
+            - name: Wait for the registry to serve the release
+              run: |
+                  spec="better-compact@$(node -p 'require("./packages/opencode/package.json").version')"
+                  echo "RELEASE_SPEC=$spec" >> "$GITHUB_ENV"
+                  for attempt in $(seq 30); do
+                      npm view "$spec" version --prefer-online >/dev/null 2>&1 && exit 0
+                      sleep 10
+                  done
+                  echo "$spec is still missing from the registry after five minutes" >&2
+                  exit 1
+            - run: node packages/opencode/scripts/smoke-opencode-install.mjs "$HOME/.opencode/bin/opencode" "$RELEASE_SPEC"
 
     github-release:
         needs: consumer
